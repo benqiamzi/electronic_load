@@ -1,0 +1,26 @@
+# CMake and IDE build output
+build/
+build-*/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+compile_commands.json
+
+# Generated firmware images and debug files
+*.bin
+*.elf
+*.hex
+*.map
+*.lst
+*.o
+*.obj
+*.d
+
+# Editor and operating-system metadata
+.idea/
+.vscode/
+*.user
+*.suo
+*.swp
+.DS_Store
+Thumbs.db
