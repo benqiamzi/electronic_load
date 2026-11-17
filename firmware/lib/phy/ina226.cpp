@@ -5,7 +5,8 @@
 namespace ElectronicLoad::PHY {
 
 namespace {
-constexpr uint16_t Address = 0x40U << 1;
+constexpr uint8_t FirstAddress = 0x40;
+constexpr uint8_t LastAddress = 0x4f;
 constexpr uint8_t ConfigurationRegister = 0x00;
 constexpr uint8_t BusVoltageRegister = 0x02;
 constexpr uint8_t PowerRegister = 0x03;
@@ -31,7 +32,17 @@ Ina226::Ina226(I2C_HandleTypeDef &i2c) : _i2c(i2c) {
 
 bool Ina226::init() {
     uint16_t manufacturer = 0;
-    if (!readRegister(ManufacturerIdRegister, manufacturer) || manufacturer != ManufacturerId) {
+    _address = 0;
+    for (uint8_t address = FirstAddress; address <= LastAddress; ++address) {
+        _address = static_cast<uint16_t>(address) << 1;
+        if (readRegister(ManufacturerIdRegister, manufacturer) &&
+            manufacturer == ManufacturerId) {
+            break;
+        }
+        _address = 0;
+    }
+
+    if (_address == 0) {
         return false;
     }
 
@@ -63,13 +74,13 @@ bool Ina226::writeRegister(uint8_t reg, uint16_t value) {
         static_cast<uint8_t>(value >> 8),
         static_cast<uint8_t>(value & 0xffU),
     };
-    return HAL_I2C_Mem_Write(&_i2c, Address, reg, I2C_MEMADD_SIZE_8BIT,
+    return HAL_I2C_Mem_Write(&_i2c, _address, reg, I2C_MEMADD_SIZE_8BIT,
         data, sizeof(data), I2cTimeoutMs) == HAL_OK;
 }
 
 bool Ina226::readRegister(uint8_t reg, uint16_t &value) {
     uint8_t data[2] = {};
-    if (HAL_I2C_Mem_Read(&_i2c, Address, reg, I2C_MEMADD_SIZE_8BIT,
+    if (HAL_I2C_Mem_Read(&_i2c, _address, reg, I2C_MEMADD_SIZE_8BIT,
             data, sizeof(data), I2cTimeoutMs) != HAL_OK) {
         return false;
     }

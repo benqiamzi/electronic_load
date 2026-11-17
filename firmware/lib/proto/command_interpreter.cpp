@@ -125,6 +125,10 @@ void CommandInterpreter::execute(uint32_t nowMs) {
         sendControlError(_controller.clearFault(nowMs));
         return;
     }
+    if (commandEquals(command, "DIAG:DAC:ZERO", "DIAGNOSTIC:DAC:ZERO")) {
+        sendControlError(_controller.diagnosticDac(0.0f));
+        return;
+    }
 
     char *argument = std::strchr(command, ' ');
     if (argument != nullptr) {
@@ -153,6 +157,15 @@ void CommandInterpreter::execute(uint32_t nowMs) {
             return;
         }
         sendControlError(_controller.current(value));
+        return;
+    }
+    if (commandEquals(command, "DIAG:DAC", "DIAGNOSTIC:DAC")) {
+        float value = 0.0f;
+        if (argument == nullptr || !parseNumber(argument, value)) {
+            pushError(-104, "DAC diagnostic value must be a finite number");
+            return;
+        }
+        sendControlError(_controller.diagnosticDac(value));
         return;
     }
 

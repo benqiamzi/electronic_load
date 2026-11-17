@@ -171,6 +171,22 @@ void LoadController::reset(uint32_t nowMs) {
     (void)clearFault(nowMs);
 }
 
+ControlResult LoadController::diagnosticDac(float amps) {
+    if (_state != LoadState::Disabled) {
+        return ControlResult::failure("DAC diagnostic requires disabled state");
+    }
+    if (!std::isfinite(amps) || amps < 0.0f || amps > MaximumCurrentA) {
+        return ControlResult::failure("DAC diagnostic value must be between 0 and 5 A");
+    }
+
+    _output.enabled(false);
+    if (!_output.setCurrent(amps)) {
+        trip(LoadFault::SensorFailure);
+        return ControlResult::failure("Unable to write DAC diagnostic value");
+    }
+    return ControlResult::ok();
+}
+
 LoadState LoadController::state() const {
     return _state;
 }

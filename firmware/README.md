@@ -36,8 +36,14 @@ accepted where shown.
 | `STAT?` | Read state, latched fault, and requested current. |
 | `SYST:FAULT:CLEAR` | Clear a fault after the measured condition is safe. |
 | `SYST:ERR?` | Pop the oldest command error. |
+| `DIAG:DAC <A>` | Write both DAC channels while keeping `TC_EN` disabled. |
+| `DIAG:DAC:ZERO` | Return both DAC channels to zero after diagnostics. |
 
 For first power-up, use a current-limited bench supply and no high-power input.
 Confirm PB9 stays low, PA15 idles high, PB10 is approximately 37.9% duty, and
 both DAC channels remain at zero. Then verify measurements before trying a small
 setpoint such as `SOUR:CURR 0.05` followed by `INP ON`.
+
+For a DAC communication check with the power stage disabled, send `DIAG:DAC 1`.
+Both DAC outputs should measure approximately 0.100 V. Send `DIAG:DAC:ZERO`
+after the measurement and confirm that both outputs return to approximately 0 V.

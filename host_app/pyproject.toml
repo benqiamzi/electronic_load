@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "electronic-load-host"
+version = "0.1.0"
+description = "Desktop controller for the STM32F411 electronic load"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "PySide6>=6.7,<7",
+    "pyqtgraph>=0.13,<1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pyinstaller>=6,<7",
+]
+
+[project.scripts]
+electronic-load-host = "electronic_load_gui.app:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["electronic_load_gui*"]

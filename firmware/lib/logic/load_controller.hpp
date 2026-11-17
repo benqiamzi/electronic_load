@@ -28,6 +28,13 @@ public:
     ControlResult clearFault(uint32_t nowMs);
     void reset(uint32_t nowMs);
 
+    /**
+     * @brief Write a diagnostic DAC setpoint while keeping the load switch disabled.
+     * @param amps Equivalent total-current setpoint used for DAC conversion.
+     * @return Success when the setpoint was accepted and transmitted to the DAC.
+     */
+    ControlResult diagnosticDac(float amps);
+
     LoadState state() const;
     LoadFault fault() const;
     const Measurements &measurements() const;

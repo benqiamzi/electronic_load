@@ -29,6 +29,7 @@ private:
     bool readRegister(uint8_t reg, uint16_t &value);
 
     I2C_HandleTypeDef &_i2c;
+    uint16_t _address = 0;
 };
 
 } // namespace ElectronicLoad::PHY
