@@ -119,8 +119,17 @@ python -m electronic_load_gui.devices.drpd COM15 --capture-seconds 10 --verify-e
 `BUS:CC:CAP:DATA?`，核对错误响应。`--wire-log` 将精确的串口收发字节逐片记录为十六进制，
 文件会以新建方式打开。
 
-实机验收还应关闭并重开串口，比较记录边界和内部 `0A`、`0D`、`00` 字节。同时接入电子负载时，
-在原窗口确认身份、实时测量及低电流设定和输入状态读回。两台设备各自占用一个串口。
+实机验收还应关闭并重开串口，比较记录边界和内部 `0A`、`0D`、`00` 字节。
+当前电子负载可做电压采样验收。接入两台设备和已知参考电压后，可在同一 Qt 进程中验证
+DRPD 捕获与电子负载的电压读数。命令中的端口、参考电压和允许误差按实际接线修改。
+
+```powershell
+python tests/drpd_dual_hardware.py COM15 COM7 --voltage 5 --tolerance 0.05
+```
+
+脚本在电子负载侧读取设备身份、测量和状态。在 DRPD 侧启用捕获，若设备已进入
+`PE_SNK_READY`，则发出一次 `GET_SOURCE_CAP` 查询产生 PD 通信。验收要求收到至少两条成功的
+PD 捕获记录，其中一条含解码数据，以及三次落在参考电压允许误差内的电压读数。
 
 ### CDC 路由与联调记录（2026-11-25）
 
@@ -140,14 +149,15 @@ WinUSB。固件提交 `70b78e5` 在 TinyUSB 任务中收取 CDC 命令并调用�
 | 特殊字节与空队列 | 实机载荷含 `00`、`0A`、`0D`，两轮均读到 `-200` |
 | 断开与重连 | BOOTSEL 重启使实际 CDC 端口移除，Qt 触发断开清理。应用重启后同一设备重新连接，读回同一身份和周期 |
 | 超时恢复 | 实机将计数查询限时 1 ms，触发超时并取消排队查询。重开串口后重新读回 10 ns 周期 |
-| 电子负载兼容 | 真实 DRPD 与虚拟串口电子负载在同一 Qt 进程并行，测量、电流设定和开关读回通过。双实机回归待电子负载接入 |
+| 双实机电压采样 | DRPD `COM15` 与电子负载 `COM18` 同时运行。以 6.2 V 为参考，按 ±0.10 V 的联调判据核对，3 次读数落在 6.1825–6.1850 V，同期获取 11 条成功的 PD 捕获记录 |
+| 电子负载恒流控制 | 按当前板卡能力完成第一阶段电压采样验收。恒流控制留待后续单独验收 |
 | `Source_Capabilities` | GPIO16 极性匹配后实机进入 `PE_SNK_READY`。经 `GET_SOURCE_CAP` 捕获的记录为 1428 字节，含 681 个脉宽计数和 34 字节解码数据。捕获记录的 28 字节消息正文与固件 inquiry 响应一致 |
 | 1020 字节示例 | 按计划书附属资料的真实报文字节和字段规格重建。时间戳和脉宽值使用测试数据 |
 
 三条完整的 CDC 原始块保存在 [实机测试样本](tests/fixtures/drpd_cdc_blocks.hex)，涵盖固件事件、
 Hard Reset 和 `Source_Capabilities`。本次联调的完整串口日志保存在 `tmp/drpd-cdc-before.jsonl`、
 `tmp/drpd-cdc-live.jsonl`、`tmp/drpd-cdc-live-extended.jsonl`、`tmp/drpd-cdc-source-cap.jsonl` 和
-`tmp/drpd-cdc-final-empty.jsonl`。
+`tmp/drpd-cdc-final-empty.jsonl`。双实机电压验收结果保存在 `tmp/drpd-dual-voltage-6p2.jsonl`。
 
 ## 打包 Windows 程序
 
