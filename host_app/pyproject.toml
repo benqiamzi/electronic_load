@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "electronic-load-host"
-version = "0.1.0"
+version = "0.3.1"
 description = "Desktop controller for the STM32F411 electronic load"
 readme = "README.md"
 requires-python = ">=3.11"

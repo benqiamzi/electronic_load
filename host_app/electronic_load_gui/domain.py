@@ -27,6 +27,28 @@ class DeviceStatus:
 
 
 @dataclass(frozen=True, slots=True)
+class DacVoltages:
+    channel_1_v: float
+    channel_2_v: float
+
+
+@dataclass(frozen=True, slots=True)
+class ProtectionThresholds:
+    voltage_v: float
+    current_a: float
+    power_w: float
+    temperature_c: float
+    temperature_enabled: bool = False
+
+    def values(self) -> tuple[float, float, float, float]:
+        return self.voltage_v, self.current_a, self.power_w, self.temperature_c
+
+
+PROTECTION_RANGES = ((0.01, 30.0), (0.01, 2.75), (0.01, 50.0), (30.0, 80.0))
+CHANNEL_MODES = ("A", "B", "BOTH")
+
+
+@dataclass(frozen=True, slots=True)
 class DeviceError:
     code: int
     message: str
@@ -100,7 +122,72 @@ def parse_current(line: str) -> float:
     return _finite_float(line.strip(), "设定电流")
 
 
+def parse_channel_mode(line: str) -> str:
+    mode = line.strip().upper()
+    if mode not in CHANNEL_MODES:
+        raise ResponseError(f"输出通道模式应为 A、B 或 BOTH，实际为: {line!r}")
+    return mode
+
+
+def parse_fan_duty(line: str) -> float:
+    duty = _finite_float(line.strip(), "风扇占空比")
+    if not 0.0 <= duty <= 100.0:
+        raise ResponseError(f"风扇占空比超出 0～100% 范围: {line!r}")
+    return duty
+
+
+def parse_dac_voltages(line: str) -> DacVoltages:
+    fields = [field.strip() for field in line.split(",")]
+    if len(fields) != 2:
+        raise ResponseError(f"DAC 响应应包含 2 项，实际为 {len(fields)} 项: {line!r}")
+    channel_1 = _finite_float(fields[0], "DAC1 电压")
+    channel_2 = _finite_float(fields[1], "DAC2 电压")
+    if not 0.0 <= channel_1 <= 2.5001 or not 0.0 <= channel_2 <= 2.5001:
+        raise ResponseError(f"DAC 电压超出 0～2.5 V 范围: {line!r}")
+    return DacVoltages(channel_1_v=channel_1, channel_2_v=channel_2)
+
+
+def parse_protection_thresholds(line: str) -> ProtectionThresholds:
+    if line.startswith("ERROR,"):
+        raise ResponseError(line.partition(",")[2])
+    fields = line.split(",")
+    if len(fields) != 5:
+        raise ResponseError(f"保护阈值响应格式错误: {line!r}")
+    values = tuple(_finite_float(field, "保护阈值") for field in fields[:4])
+    if not all(low <= value <= high for value, (low, high) in zip(values, PROTECTION_RANGES)):
+        raise ResponseError(f"设备返回的保护阈值超出允许范围: {line!r}")
+    return ProtectionThresholds(*values, temperature_enabled=parse_switch_state(fields[4]))
+
+
+def format_protection_command(thresholds: ProtectionThresholds) -> str:
+    values = thresholds.values()
+    if not all(low <= value <= high for value, (low, high) in zip(values, PROTECTION_RANGES)):
+        raise ValueError("保护阈值超出允许范围")
+    return "SYST:PROT " + ",".join(f"{value:.4f}" for value in values)
+
+
 def format_current_command(amps: float) -> str:
-    if not math.isfinite(amps) or not 0.0 <= amps <= 5.0:
-        raise ValueError("恒流设定值必须在 0 A 到 5 A 之间")
+    if not math.isfinite(amps) or not 0.0 <= amps <= 2.5:
+        raise ValueError("总恒流设定值必须在 0 A 到 2.5 A 之间")
     return f"SOUR:CURR {amps:.4f}"
+
+
+def format_channel_mode_command(mode: str) -> str:
+    normalized = mode.strip().upper()
+    if normalized not in CHANNEL_MODES:
+        raise ValueError("输出通道模式必须为 A、B 或 BOTH")
+    return f"SOUR:CHAN {normalized}"
+
+
+def format_fan_duty_command(duty_percent: float) -> str:
+    if not math.isfinite(duty_percent) or not 0.0 <= duty_percent <= 100.0:
+        raise ValueError("风扇占空比必须在 0% 到 100% 之间")
+    return f"FAN:DUTY {duty_percent:.1f}"
+
+
+def format_dac_voltage_command(channel: int, volts: float) -> str:
+    if channel not in (1, 2):
+        raise ValueError("DAC 通道必须为 1 或 2")
+    if not math.isfinite(volts) or not 0.0 <= volts <= 2.5:
+        raise ValueError("DAC 电压必须在 0 V 到 2.5 V 之间")
+    return f"DIAG:DAC:VOLT {channel},{volts:.5f}"

@@ -22,6 +22,7 @@
 #include "stm32f4xx_it.h"
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "adc.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -218,6 +219,22 @@ void OTG_FS_IRQHandler(void)
 void EXTI9_5_IRQHandler(void)
 {
   HAL_GPIO_EXTI_IRQHandler(INA226_INT_Pin);
+}
+
+/**
+  * @brief This function handles ADC1 global interrupt (analog watchdog).
+  */
+void ADC_IRQHandler(void)
+{
+  HAL_ADC_IRQHandler(&hadc1);
+}
+
+/**
+  * @brief This function handles DMA2 Stream0 interrupt (ADC1 scan).
+  */
+void DMA2_Stream0_IRQHandler(void)
+{
+  HAL_DMA_IRQHandler(&hdma_adc1);
 }
 
 /* USER CODE BEGIN 1 */

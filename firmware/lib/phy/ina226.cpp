@@ -8,6 +8,7 @@ namespace {
 constexpr uint8_t FirstAddress = 0x40;
 constexpr uint8_t LastAddress = 0x4f;
 constexpr uint8_t ConfigurationRegister = 0x00;
+constexpr uint8_t ShuntVoltageRegister = 0x01;
 constexpr uint8_t BusVoltageRegister = 0x02;
 constexpr uint8_t PowerRegister = 0x03;
 constexpr uint8_t CurrentRegister = 0x04;
@@ -18,8 +19,12 @@ constexpr uint8_t ManufacturerIdRegister = 0xfe;
 constexpr uint16_t ManufacturerId = 0x5449;
 constexpr uint16_t Configuration = 0x4127;
 constexpr uint16_t Calibration = 5120;
-constexpr uint16_t ShuntOvervoltageEnable = 0x8000;
-constexpr uint16_t AlertLimit = 10500;
+// Latch the active-low alert so software can distinguish a genuine INA226
+// shunt-overvoltage event (AFF set) from an electrical glitch on the EXTI line.
+// Reading Mask/Enable clears the latch after diagnostics have captured it.
+constexpr uint16_t ShuntOvervoltageEnable = 0x8001;
+// 2.75 A * 5 mOhm / 2.5 uV per bit = 5500.
+constexpr uint16_t AlertLimit = 5500;
 constexpr float BusVoltageLsbV = 0.00125f;
 constexpr float BusDividerRatio = 2.0f;
 constexpr float CurrentLsbA = 0.0002f;
@@ -66,6 +71,19 @@ bool Ina226::read(Ina226Readings &readings) {
     readings.currentA = std::max(0.0f,
         static_cast<float>(static_cast<int16_t>(currentRaw)) * CurrentLsbA);
     readings.powerW = static_cast<float>(powerRaw) * PowerLsbW * BusDividerRatio;
+    return true;
+}
+
+bool Ina226::readDiagnostics(Ina226Diagnostics &diagnostics) {
+    uint16_t shuntRaw = 0;
+    if (!readRegister(ConfigurationRegister, diagnostics.configuration) ||
+        !readRegister(ShuntVoltageRegister, shuntRaw) ||
+        !readRegister(CalibrationRegister, diagnostics.calibration) ||
+        !readRegister(MaskEnableRegister, diagnostics.maskEnable) ||
+        !readRegister(AlertLimitRegister, diagnostics.alertLimit)) {
+        return false;
+    }
+    diagnostics.shuntRaw = static_cast<int16_t>(shuntRaw);
     return true;
 }
 

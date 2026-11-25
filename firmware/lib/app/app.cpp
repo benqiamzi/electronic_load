@@ -18,7 +18,7 @@ Application::Application() :
     _ina226(hi2c1),
     _analogMonitor(hadc1),
     _controller(_output),
-    _commandInterpreter(_controller, _transport) {
+    _commandInterpreter(_controller, _ina226, _transport) {
 }
 
 void Application::init() {
@@ -45,6 +45,7 @@ void Application::runOnce() {
     _analogMonitor.run(nowMs);
     acquireMeasurements(nowMs);
     _controller.run(nowMs);
+    _analogMonitor.setCurrentLimit(_controller.currentLimitA());
     _commandInterpreter.run(nowMs);
     _transport.run();
     updateStatusLed(nowMs);
@@ -69,6 +70,13 @@ void Application::inaAlertFromIsr() {
     }
 }
 
+void Application::currentLimitFromIsr() {
+    PHY::LoadOutput::emergencyDisableFromIsr();
+    if (_initialized) {
+        _controller.notifyCurrentLimitFromIsr();
+    }
+}
+
 void Application::acquireMeasurements(uint32_t nowMs) {
     if (static_cast<uint32_t>(nowMs - _lastIna226Ms) < Ina226PeriodMs) {
         return;
@@ -78,6 +86,8 @@ void Application::acquireMeasurements(uint32_t nowMs) {
 
     const PHY::AnalogReadings &analog = _analogMonitor.readings();
     Logic::Measurements measurements;
+    // Host-visible voltage/current/power are sourced exclusively from INA226.
+    // The fast ADC current channel remains an independent protection input.
     measurements.voltageV = _ina226Readings.voltageV;
     measurements.currentA = _ina226Readings.currentA;
     measurements.powerW = _ina226Readings.powerW;
@@ -85,8 +95,17 @@ void Application::acquireMeasurements(uint32_t nowMs) {
     measurements.rightTemperatureC = analog.rightTemperatureC;
     measurements.fastCurrentA = analog.fastCurrentA;
     measurements.timestampMs = nowMs;
-    measurements.valid = _ina226Valid && analog.valid;
-    _controller.measurements(measurements);
+    measurements.ina226Valid = _ina226Valid;
+    measurements.fastCurrentValid = analog.fastCurrentValid;
+    measurements.temperatureValid = analog.temperatureValid;
+    // Temperature hardware is not populated on the current board revision.
+    // INA226 and the installed INA240 fast-current channel remain required.
+    measurements.valid = _ina226Valid && analog.fastCurrentValid;
+    // Retain the last good sample across isolated I2C/ADC errors. The
+    // controller's 100 ms freshness limit still trips a sustained failure.
+    if (measurements.valid) {
+        _controller.measurements(measurements);
+    }
 }
 
 void Application::updateStatusLed(uint32_t nowMs) {
@@ -135,8 +154,18 @@ extern "C" void electronicLoadInaAlert(void) {
     ElectronicLoad::App::Internal::applicationInstance.inaAlertFromIsr();
 }
 
+extern "C" void electronicLoadCurrentLimit(void) {
+    ElectronicLoad::App::Internal::applicationInstance.currentLimitFromIsr();
+}
+
 extern "C" void HAL_GPIO_EXTI_Callback(uint16_t gpioPin) {
     if (gpioPin == INA226_INT_Pin) {
         electronicLoadInaAlert();
+    }
+}
+
+extern "C" void HAL_ADC_LevelOutOfWindowCallback(ADC_HandleTypeDef *adcHandle) {
+    if (adcHandle == &hadc1) {
+        electronicLoadCurrentLimit();
     }
 }

@@ -46,6 +46,14 @@ public:
     /** Immediately disables the load after an INA226 alert interrupt. */
     void inaAlertFromIsr();
 
+    /**
+     * @brief Handles the fast-current analog-watchdog interrupt.
+     *
+     * Pulls TC_EN low immediately; the control loop re-arms it after the
+     * fixed off-time and trims the watchdog threshold.
+     */
+    void currentLimitFromIsr();
+
 private:
     /** Updates the combined measurement snapshot when an INA226 sample is due. */
     void acquireMeasurements(uint32_t nowMs);

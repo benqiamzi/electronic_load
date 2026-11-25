@@ -31,6 +31,9 @@ void electronicLoadUsbTransmitComplete(void);
 /** Handles the active-low INA226 alert from the GPIO interrupt callback. */
 void electronicLoadInaAlert(void);
 
+/** Handles a fast-current analog-watchdog event from the ADC interrupt. */
+void electronicLoadCurrentLimit(void);
+
 #ifdef __cplusplus
 }
 #endif

@@ -22,11 +22,24 @@ bool Dac8552::writeBoth(uint16_t channelA, uint16_t channelB) {
     if (!writeFrame(WriteBufferA, channelA)) {
         return false;
     }
-    return writeFrame(WriteBufferBAndLoadBoth, channelB);
+    if (!writeFrame(WriteBufferBAndLoadBoth, channelB)) {
+        return false;
+    }
+    _channelACode = channelA;
+    _channelBCode = channelB;
+    return true;
 }
 
 bool Dac8552::writeZero() {
     return writeBoth(0, 0);
+}
+
+uint16_t Dac8552::channelACode() const {
+    return _channelACode;
+}
+
+uint16_t Dac8552::channelBCode() const {
+    return _channelBCode;
 }
 
 bool Dac8552::writeFrame(uint8_t control, uint16_t value) {

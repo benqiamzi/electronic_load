@@ -18,11 +18,15 @@ public:
     bool init();
     bool writeBoth(uint16_t channelA, uint16_t channelB);
     bool writeZero();
+    uint16_t channelACode() const;
+    uint16_t channelBCode() const;
 
 private:
     bool writeFrame(uint8_t control, uint16_t value);
 
     SPI_HandleTypeDef &_spi;
+    uint16_t _channelACode = 0;
+    uint16_t _channelBCode = 0;
 };
 
 } // namespace ElectronicLoad::PHY

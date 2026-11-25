@@ -1,0 +1,6 @@
+r
+h
+loadfile firmware/build/Release/electronic_load.hex
+r
+g
+exit

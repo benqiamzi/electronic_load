@@ -9,8 +9,10 @@
 namespace ElectronicLoad::Proto {
 
 CommandInterpreter::CommandInterpreter(Logic::LoadController &controller,
+    PHY::Ina226 &ina226,
     Transport::UsbCdcTransport &transport) :
     _controller(controller),
+    _ina226(ina226),
     _transport(transport) {
 }
 
@@ -64,7 +66,7 @@ void CommandInterpreter::execute(uint32_t nowMs) {
 
     char response[192] = {};
     if (std::strcmp(command, "*IDN?") == 0) {
-        _transport.send("ElectronicLoad,EL-F411,0,0.1.0\n");
+        _transport.send("ElectronicLoad,EL-F411,0,0.3.7\n");
         return;
     }
     if (std::strcmp(command, "*RST") == 0) {
@@ -77,6 +79,17 @@ void CommandInterpreter::execute(uint32_t nowMs) {
     }
     if (commandEquals(command, "SOUR:CURR?", "SOURCE:CURRENT?")) {
         std::snprintf(response, sizeof(response), "%.4f\n", _controller.current());
+        _transport.send(response);
+        return;
+    }
+    if (commandEquals(command, "SOUR:CHAN?", "SOURCE:CHANNEL?")) {
+        std::snprintf(response, sizeof(response), "%s\n",
+            Logic::loadChannelModeName(_controller.channelMode()));
+        _transport.send(response);
+        return;
+    }
+    if (commandEquals(command, "FAN:DUTY?", "FAN:DUTY?")) {
+        std::snprintf(response, sizeof(response), "%.1f\n", _controller.fanDuty());
         _transport.send(response);
         return;
     }
@@ -125,8 +138,68 @@ void CommandInterpreter::execute(uint32_t nowMs) {
         sendControlError(_controller.clearFault(nowMs));
         return;
     }
+    if (commandEquals(command, "SYST:PROT?", "SYSTEM:PROTECTION?")) {
+        sendProtectionSettings(Logic::ControlResult::ok());
+        return;
+    }
+    if (commandEquals(command, "SYST:PROT:DEF", "SYSTEM:PROTECTION:DEFAULT")) {
+        sendProtectionSettings(_controller.setProtectionThresholds({}));
+        return;
+    }
     if (commandEquals(command, "DIAG:DAC:ZERO", "DIAGNOSTIC:DAC:ZERO")) {
-        sendControlError(_controller.diagnosticDac(0.0f));
+        sendControlError(_controller.diagnosticDacZero());
+        return;
+    }
+    if (commandEquals(command, "DIAG:DAC:MODE?", "DIAGNOSTIC:DAC:MODE?")) {
+        _transport.send(_controller.dacManualMode() ? "MANUAL\n" : "AUTO\n");
+        return;
+    }
+    if (commandEquals(command, "DIAG:DAC:VOLT?", "DIAGNOSTIC:DAC:VOLTAGE?")) {
+        std::snprintf(response, sizeof(response), "%.5f,%.5f\n",
+            _controller.dacVoltage(1U), _controller.dacVoltage(2U));
+        _transport.send(response);
+        return;
+    }
+    if (commandEquals(command, "DIAG:MEAS?", "DIAGNOSTIC:MEASUREMENT?")) {
+        const uint32_t ageMs = static_cast<uint32_t>(nowMs - measurement.timestampMs);
+        std::snprintf(response, sizeof(response), "%u,%u,%u,%u,%.4f,%lu\n",
+            measurement.valid ? 1U : 0U,
+            measurement.ina226Valid ? 1U : 0U,
+            measurement.fastCurrentValid ? 1U : 0U,
+            measurement.temperatureValid ? 1U : 0U,
+            measurement.fastCurrentA,
+            static_cast<unsigned long>(ageMs));
+        _transport.send(response);
+        return;
+    }
+    if (commandEquals(command, "DIAG:OC?", "DIAGNOSTIC:OVERCURRENT?")) {
+        std::snprintf(response, sizeof(response), "%s,%.4f,%.4f\n",
+            Logic::overCurrentSourceName(_controller.overCurrentSource()),
+            _controller.overCurrentIna226A(), _controller.overCurrentFastA());
+        _transport.send(response);
+        return;
+    }
+    if (commandEquals(command, "DIAG:LIM?", "DIAGNOSTIC:LIMIT?")) {
+        std::snprintf(response, sizeof(response), "%.3f,%lu,%lu\n",
+            _controller.currentLimitA(),
+            static_cast<unsigned long>(_controller.currentLimitOffTimeUs()),
+            static_cast<unsigned long>(_controller.currentLimitEvents()));
+        _transport.send(response);
+        return;
+    }
+    if (commandEquals(command, "DIAG:INA?", "DIAGNOSTIC:INA226?")) {
+        PHY::Ina226Diagnostics diagnostics;
+        if (!_ina226.readDiagnostics(diagnostics)) {
+            pushError(-350, "Unable to read INA226 diagnostic registers");
+            _transport.send("ERROR\n");
+            return;
+        }
+        std::snprintf(response, sizeof(response),
+            "%04X,%d,%04X,%04X,%04X\n",
+            diagnostics.configuration, diagnostics.shuntRaw,
+            diagnostics.calibration, diagnostics.maskEnable,
+            diagnostics.alertLimit);
+        _transport.send(response);
         return;
     }
 
@@ -150,6 +223,16 @@ void CommandInterpreter::execute(uint32_t nowMs) {
         }
         return;
     }
+    if (commandEquals(command, "SYST:PROT", "SYSTEM:PROTECTION")) {
+        Logic::ProtectionThresholds thresholds;
+        if (!parseProtectionThresholds(argument, thresholds)) {
+            sendProtectionSettings(Logic::ControlResult::failure(
+                "Expected four finite thresholds: volts,amps,watts,degC"));
+            return;
+        }
+        sendProtectionSettings(_controller.setProtectionThresholds(thresholds));
+        return;
+    }
     if (commandEquals(command, "SOUR:CURR", "SOURCE:CURRENT")) {
         float value = 0.0f;
         if (argument == nullptr || !parseNumber(argument, value)) {
@@ -159,6 +242,29 @@ void CommandInterpreter::execute(uint32_t nowMs) {
         sendControlError(_controller.current(value));
         return;
     }
+    if (commandEquals(command, "SOUR:CHAN", "SOURCE:CHANNEL")) {
+        if (argument == nullptr) {
+            pushError(-109, "Missing channel mode");
+        } else if (std::strcmp(argument, "A") == 0) {
+            sendControlError(_controller.channelMode(Logic::LoadChannelMode::A));
+        } else if (std::strcmp(argument, "B") == 0) {
+            sendControlError(_controller.channelMode(Logic::LoadChannelMode::B));
+        } else if (std::strcmp(argument, "BOTH") == 0) {
+            sendControlError(_controller.channelMode(Logic::LoadChannelMode::Both));
+        } else {
+            pushError(-222, "Channel mode must be A, B, or BOTH");
+        }
+        return;
+    }
+    if (commandEquals(command, "FAN:DUTY", "FAN:DUTY")) {
+        float value = 0.0f;
+        if (argument == nullptr || !parseNumber(argument, value)) {
+            pushError(-104, "Fan duty must be a finite number");
+            return;
+        }
+        sendControlError(_controller.fanDuty(value));
+        return;
+    }
     if (commandEquals(command, "DIAG:DAC", "DIAGNOSTIC:DAC")) {
         float value = 0.0f;
         if (argument == nullptr || !parseNumber(argument, value)) {
@@ -166,6 +272,32 @@ void CommandInterpreter::execute(uint32_t nowMs) {
             return;
         }
         sendControlError(_controller.diagnosticDac(value));
+        return;
+    }
+    if (commandEquals(command, "DIAG:DAC:VOLT", "DIAGNOSTIC:DAC:VOLTAGE")) {
+        char *separator = argument != nullptr ? std::strchr(argument, ',') : nullptr;
+        if (separator == nullptr) {
+            pushError(-109, "DAC voltage requires channel,volts");
+            return;
+        }
+        *separator++ = '\0';
+        char *channelEnd = nullptr;
+        const long channel = std::strtol(argument, &channelEnd, 10);
+        while (channelEnd != nullptr && (*channelEnd == ' ' || *channelEnd == '\t')) {
+            ++channelEnd;
+        }
+        if (channelEnd == argument || channelEnd == nullptr || *channelEnd != '\0' ||
+            channel < 1 || channel > 2) {
+            pushError(-222, "DAC channel must be 1 or 2");
+            return;
+        }
+        float volts = 0.0f;
+        if (!parseNumber(separator, volts)) {
+            pushError(-104, "DAC voltage must be a finite number");
+            return;
+        }
+        sendControlError(_controller.diagnosticDacVoltage(
+            static_cast<uint8_t>(channel), volts));
         return;
     }
 
@@ -200,6 +332,41 @@ void CommandInterpreter::sendControlError(const Logic::ControlResult &result) {
     }
 }
 
+void CommandInterpreter::sendProtectionSettings(const Logic::ControlResult &result) {
+    char response[128] = {};
+    if (!result) {
+        std::snprintf(response, sizeof(response), "ERROR,%s\n", result.error);
+    } else {
+        const auto &thresholds = _controller.protectionThresholds();
+        std::snprintf(response, sizeof(response), "%.4f,%.4f,%.4f,%.4f,%u\n",
+            thresholds.voltageV, thresholds.currentA, thresholds.powerW,
+            thresholds.temperatureC, _controller.temperatureProtectionEnabled() ? 1U : 0U);
+    }
+    _transport.send(response);
+}
+
+bool CommandInterpreter::parseProtectionThresholds(
+    char *argument, Logic::ProtectionThresholds &thresholds) {
+    if (argument == nullptr) {
+        return false;
+    }
+    const std::array<float *, 3> fields = {
+        &thresholds.voltageV, &thresholds.currentA, &thresholds.powerW,
+    };
+    for (float *field : fields) {
+        char *separator = std::strchr(argument, ',');
+        if (separator == nullptr) {
+            return false;
+        }
+        *separator++ = '\0';
+        if (!parseNumber(argument, *field)) {
+            return false;
+        }
+        argument = separator;
+    }
+    return parseNumber(argument, thresholds.temperatureC);
+}
+
 bool CommandInterpreter::commandEquals(const char *value, const char *shortForm,
     const char *longForm) {
     return std::strcmp(value, shortForm) == 0 || std::strcmp(value, longForm) == 0;
@@ -208,10 +375,13 @@ bool CommandInterpreter::commandEquals(const char *value, const char *shortForm,
 bool CommandInterpreter::parseNumber(const char *text, float &value) {
     char *end = nullptr;
     value = std::strtof(text, &end);
+    if (end == text || end == nullptr) {
+        return false;
+    }
     while (end != nullptr && (*end == ' ' || *end == '\t')) {
         ++end;
     }
-    return end != text && end != nullptr && *end == '\0' && std::isfinite(value);
+    return *end == '\0' && std::isfinite(value);
 }
 
 } // namespace ElectronicLoad::Proto

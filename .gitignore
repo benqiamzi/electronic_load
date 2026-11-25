@@ -18,7 +18,11 @@ compile_commands.json
 
 # Editor and operating-system metadata
 .idea/
-.vscode/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/launch.json
+!.vscode/settings.json
+!.vscode/tasks.json
 *.user
 *.suo
 *.swp

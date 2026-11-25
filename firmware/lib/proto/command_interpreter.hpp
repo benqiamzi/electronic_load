@@ -10,6 +10,7 @@
 #include <cstdint>
 
 #include "lib/logic/load_controller.hpp"
+#include "lib/phy/ina226.hpp"
 #include "lib/transport/usb_cdc_transport.hpp"
 
 namespace ElectronicLoad::Proto {
@@ -17,6 +18,7 @@ namespace ElectronicLoad::Proto {
 class CommandInterpreter {
 public:
     CommandInterpreter(Logic::LoadController &controller,
+        PHY::Ina226 &ina226,
         Transport::UsbCdcTransport &transport);
 
     void run(uint32_t nowMs);
@@ -32,6 +34,8 @@ private:
     void pushError(int code, const char *message);
     void sendError();
     void sendControlError(const Logic::ControlResult &result);
+    void sendProtectionSettings(const Logic::ControlResult &result);
+    static bool parseProtectionThresholds(char *argument, Logic::ProtectionThresholds &thresholds);
     static bool commandEquals(const char *value, const char *shortForm,
         const char *longForm);
     static bool parseNumber(const char *text, float &value);
@@ -40,6 +44,7 @@ private:
     static constexpr size_t ErrorDepth = 8;
 
     Logic::LoadController &_controller;
+    PHY::Ina226 &_ina226;
     Transport::UsbCdcTransport &_transport;
     std::array<char, LineSize> _line{};
     size_t _lineLength = 0;

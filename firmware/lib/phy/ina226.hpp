@@ -17,12 +17,21 @@ struct Ina226Readings {
     float powerW = 0.0f;
 };
 
+struct Ina226Diagnostics {
+    uint16_t configuration = 0;
+    int16_t shuntRaw = 0;
+    uint16_t calibration = 0;
+    uint16_t maskEnable = 0;
+    uint16_t alertLimit = 0;
+};
+
 class Ina226 {
 public:
     explicit Ina226(I2C_HandleTypeDef &i2c);
 
     bool init();
     bool read(Ina226Readings &readings);
+    bool readDiagnostics(Ina226Diagnostics &diagnostics);
 
 private:
     bool writeRegister(uint8_t reg, uint16_t value);

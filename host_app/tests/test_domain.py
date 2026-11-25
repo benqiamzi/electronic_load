@@ -3,9 +3,15 @@ import unittest
 
 from electronic_load_gui.domain import (
     ResponseError,
+    format_channel_mode_command,
     format_current_command,
+    format_dac_voltage_command,
+    format_fan_duty_command,
+    parse_channel_mode,
+    parse_dac_voltages,
     parse_device_error,
     parse_identity,
+    parse_fan_duty,
     parse_measurements,
     parse_status,
     parse_switch_state,
@@ -53,9 +59,40 @@ class DomainParsingTests(unittest.TestCase):
     def test_format_current_command(self) -> None:
         self.assertEqual(format_current_command(1.2), "SOUR:CURR 1.2000")
         with self.assertRaises(ValueError):
-            format_current_command(5.1)
+            format_current_command(2.6)
         with self.assertRaises(ValueError):
             format_current_command(math.inf)
+
+    def test_parse_and_format_dac_voltages(self) -> None:
+        voltages = parse_dac_voltages("0.10000,1.25000")
+        self.assertAlmostEqual(voltages.channel_1_v, 0.1)
+        self.assertAlmostEqual(voltages.channel_2_v, 1.25)
+        self.assertEqual(
+            format_dac_voltage_command(2, 1.25),
+            "DIAG:DAC:VOLT 2,1.25000",
+        )
+        with self.assertRaises(ValueError):
+            format_dac_voltage_command(3, 1.0)
+        with self.assertRaises(ValueError):
+            format_dac_voltage_command(1, 2.6)
+        with self.assertRaises(ResponseError):
+            parse_dac_voltages("3.0,0.0")
+
+    def test_channel_mode_parse_and_format(self) -> None:
+        self.assertEqual(parse_channel_mode("both"), "BOTH")
+        self.assertEqual(format_channel_mode_command("b"), "SOUR:CHAN B")
+        with self.assertRaises(ResponseError):
+            parse_channel_mode("ALL")
+        with self.assertRaises(ValueError):
+            format_channel_mode_command("ALL")
+
+    def test_fan_duty_parse_and_format(self) -> None:
+        self.assertAlmostEqual(parse_fan_duty("37.5"), 37.5)
+        self.assertEqual(format_fan_duty_command(80), "FAN:DUTY 80.0")
+        with self.assertRaises(ResponseError):
+            parse_fan_duty("101")
+        with self.assertRaises(ValueError):
+            format_fan_duty_command(-1)
 
 
 if __name__ == "__main__":

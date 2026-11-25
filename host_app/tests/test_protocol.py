@@ -2,6 +2,7 @@ import unittest
 
 from PySide6.QtCore import QObject, QCoreApplication, Signal
 
+from electronic_load_gui.device import ElectronicLoadDevice
 from electronic_load_gui.protocol import ProtocolClient
 
 
@@ -55,6 +56,26 @@ class ProtocolClientTests(unittest.TestCase):
         self.assertEqual(self.transport.writes, ["INP OFF", "SYST:ERR?"])
         self.transport.line_received.emit('0,"No error"')
         self.assertEqual(response, ['0,"No error"'])
+
+    def test_dac_voltage_capability_requires_firmware_0_2(self) -> None:
+        self.assertFalse(
+            ElectronicLoadDevice._supports_dac_voltage("ElectronicLoad,EL-F411,0,0.1.0")
+        )
+        self.assertTrue(
+            ElectronicLoadDevice._supports_dac_voltage("ElectronicLoad,EL-F411,0,0.2.0")
+        )
+
+    def test_advanced_control_capability_requires_firmware_0_3(self) -> None:
+        self.assertFalse(
+            ElectronicLoadDevice._supports_advanced_controls(
+                "ElectronicLoad,EL-F411,0,0.2.0"
+            )
+        )
+        self.assertTrue(
+            ElectronicLoadDevice._supports_advanced_controls(
+                "ElectronicLoad,EL-F411,0,0.3.1"
+            )
+        )
 
 
 if __name__ == "__main__":

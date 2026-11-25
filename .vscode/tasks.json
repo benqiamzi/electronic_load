@@ -1,0 +1,141 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "PySide6: 准备运行环境",
+            "type": "process",
+            "command": "powershell.exe",
+            "args": [
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                "$venvPython = '${workspaceFolder}\\host_app\\.venv\\Scripts\\python.exe'; if (-not (Test-Path -LiteralPath $venvPython)) { python -m venv '${workspaceFolder}\\host_app\\.venv'; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } }; & $venvPython -c 'import PySide6, pyqtgraph' 2>$null; if ($LASTEXITCODE -ne 0) { & $venvPython -m pip install -e '${workspaceFolder}\\host_app'; exit $LASTEXITCODE }"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}\\host_app"
+            },
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "silent",
+                "panel": "shared",
+                "clear": false
+            }
+        },
+        {
+            "label": "PySide6: 运行上位机",
+            "type": "process",
+            "command": "${workspaceFolder}\\host_app\\.venv\\Scripts\\python.exe",
+            "args": [
+                "${workspaceFolder}\\host_app\\run.py"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}\\host_app",
+                "env": {
+                    "PYTHONUTF8": "1"
+                }
+            },
+            "dependsOn": "PySide6: 准备运行环境",
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated"
+            }
+        },
+        {
+            "label": "PySide6: 运行单元测试",
+            "type": "process",
+            "command": "${workspaceFolder}\\host_app\\.venv\\Scripts\\python.exe",
+            "args": [
+                "-m",
+                "unittest",
+                "discover",
+                "-s",
+                "tests",
+                "-v"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}\\host_app"
+            },
+            "dependsOn": "PySide6: 准备运行环境",
+            "problemMatcher": [],
+            "group": "test"
+        },
+        {
+            "label": "Configure Release",
+            "type": "process",
+            "command": "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\Common7\\IDE\\CommonExtensions\\Microsoft\\CMake\\CMake\\bin\\cmake.exe",
+            "args": [
+                "--preset",
+                "Release"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}\\firmware",
+                "env": {
+                    "PATH": "C:\\Program Files (x86)\\Arm GNU Toolchain arm-none-eabi\\14.3 rel1\\bin;C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\Common7\\IDE\\CommonExtensions\\Microsoft\\CMake\\Ninja;${env:PATH}"
+                }
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "Build Release",
+            "type": "process",
+            "command": "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\Common7\\IDE\\CommonExtensions\\Microsoft\\CMake\\CMake\\bin\\cmake.exe",
+            "args": [
+                "--build",
+                "--preset",
+                "Release"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}\\firmware",
+                "env": {
+                    "PATH": "C:\\Program Files (x86)\\Arm GNU Toolchain arm-none-eabi\\14.3 rel1\\bin;C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\Common7\\IDE\\CommonExtensions\\Microsoft\\CMake\\Ninja;${env:PATH}"
+                }
+            },
+            "dependsOn": "Configure Release",
+            "problemMatcher": "$gcc"
+        },
+        {
+            "label": "Flash STM32",
+            "type": "shell",
+            "command": "C:\\Program Files\\STMicroelectronics\\STM32Cube\\STM32CubeProgrammer\\bin\\STM32_Programmer_CLI.exe",
+            "args": [
+                "-c",
+                "port=SWD",
+                "-w",
+                "${workspaceFolder}\\firmware\\build\\Release\\electronic_load.elf",
+                "-v",
+                "-rst"
+            ],
+            "dependsOn": "Build Release",
+            "problemMatcher": []
+        },
+        {
+            "label": "Flash STM32 (J-Link)",
+            "type": "process",
+            "command": "D:\\J-Link\\JLink_V816\\JLink.exe",
+            "args": [
+                "-device",
+                "STM32F411RC",
+                "-if",
+                "SWD",
+                "-speed",
+                "100",
+                "-autoconnect",
+                "1",
+                "-CommanderScript",
+                "${workspaceFolder}\\.vscode\\flash-jlink.jlink"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "dependsOn": "Build Release",
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "clear": true
+            }
+        }
+    ]
+}
