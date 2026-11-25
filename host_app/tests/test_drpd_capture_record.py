@@ -1,6 +1,8 @@
+from pathlib import Path
 from struct import pack
 import unittest
 
+from electronic_load_gui.devices.drpd.binary_block import BinaryBlockParser
 from electronic_load_gui.devices.drpd.capture_record import (
     CaptureRecord,
     CaptureRecordError,
@@ -16,6 +18,34 @@ def capture_payload(start, end, result, sop, pulses, data):
 
 
 class CaptureRecordTests(unittest.TestCase):
+    def test_hardware_cdc_blocks_with_internal_line_endings(self) -> None:
+        fixture = Path(__file__).with_name("fixtures") / "drpd_cdc_blocks.hex"
+        wire_frames = [bytes.fromhex(line) for line in fixture.read_text(encoding="ascii").splitlines()]
+        parser = BinaryBlockParser()
+        records = []
+        for frame in wire_frames:
+            self.assertEqual(frame[-1:], b"\n")
+            for offset in range(0, len(frame), 3):
+                records.extend(parser.feed(frame[offset:offset + 3]))
+        self.assertFalse(parser.has_pending_data)
+        self.assertEqual(records, [frame[2 + int(chr(frame[1])):-1] for frame in wire_frames])
+        self.assertTrue(all(value in b"".join(records) for value in (0, 10, 13)))
+        event, reset, source = (CaptureRecordParser.parse(record, 10.0) for record in records)
+        self.assertEqual(event.timestamp_us, 59755786)
+        self.assertEqual(event.event_type, 9)
+        self.assertIn("Source_Capabilities", event.event_text)
+        self.assertTrue(reset.is_hard_reset)
+        self.assertEqual((reset.start_timestamp_us, reset.end_timestamp_us), (154340668, 154340945))
+        self.assertEqual(reset.pulse_count, 128)
+        self.assertEqual(reset.pulse_widths[:4], (332, 164, 164, 332))
+        self.assertEqual(source.sop_bytes, bytes.fromhex("18181811"))
+        self.assertEqual((source.start_timestamp_us, source.end_timestamp_us), (32788569, 32789980))
+        self.assertEqual(source.pulse_count, 681)
+        self.assertEqual(source.data_length, 34)
+        self.assertEqual(source.decoded_data, bytes.fromhex(
+            "a1772c91010a2cd102002cc103002cb10400f44106006432dcc8643290c9bf7f7334"
+        ))
+
     def test_documented_source_capabilities(self) -> None:
         # SOP, pulse count and message bytes from the MDY-12-EF capture report.
         # Its actual pulse values and timestamps were omitted from that report.

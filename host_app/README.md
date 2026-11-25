@@ -108,6 +108,7 @@ DRPD 使用独立的 `DrpdDevice`。它在 Qt 事件循环中管理 USB CDC 串�
 使用独立探针做实机联调。在 `host_app` 目录执行，按枚举结果替换 `COM15`。
 
 ```powershell
+New-Item -ItemType Directory -Force ../tmp | Out-Null
 python -m electronic_load_gui.devices.drpd --list
 python -m electronic_load_gui.devices.drpd COM15 --wire-log ../tmp/drpd-cdc-identity.jsonl
 python -m electronic_load_gui.devices.drpd COM15 --capture-seconds 10 --verify-empty --wire-log ../tmp/drpd-cdc-live.jsonl
@@ -120,6 +121,33 @@ python -m electronic_load_gui.devices.drpd COM15 --capture-seconds 10 --verify-e
 
 实机验收还应关闭并重开串口，比较记录边界和内部 `0A`、`0D`、`00` 字节。同时接入电子负载时，
 在原窗口确认身份、实时测量及低电流设定和输入状态读回。两台设备各自占用一个串口。
+
+### CDC 路由与联调记录（2026-11-25）
+
+复刻板为 RP2350，CDC 枚举为 `COM15`（`2E8A:000A`）。原应用的 CDC 可以打开，发送
+`2a 49 44 4e 3f 0a`（`*IDN?` 加 LF）后未收到响应。源码原有 SCPI 入口为 USBTMC 和
+WinUSB。固件提交 `70b78e5` 在 TinyUSB 任务中收取 CDC 命令并调用同一 SCPI 解释器。
+文本响应直接返回 CDC，二进制响应复用固件捕获序列化输出。`BUS:CC:CAP:DATA?` 在 CDC
+空队列返回 `2d 32 30 30 0a`。先校验了 2 MiB 闪存备份，再写入并读回校验应用镜像。
+联调镜像使用复刻板配置 `CC_OUT_HIGH=19`、`CC_OUT_LOW=20`、`HW_REVISION_DETECT=0`、`SYNC=2`。
+固件提交 `0d1aee3` 增加 `DRPD_DUT_CC1_SELECT_LEVEL`，复刻板构建时设为 `0`。
+参考板构建默认沿用 GPIO 高电平选择 DUT CC1 的逻辑。
+
+| 验证项 | 结果 |
+| --- | --- |
+| CDC 文本与捕获控制 | 实机回读身份、捕获开关、10 ns 周期和队列数量 |
+| 连续二进制捕获 | 两轮共 323 条，含 50 条 Hard Reset 和 273 条固件事件，二进制块长度和内部字段长度逐条核对。复刻板 CC 极性配置验证及最终排空共读回 10 条普通 PD 报文和 1 条固件事件 |
+| 特殊字节与空队列 | 实机载荷含 `00`、`0A`、`0D`，两轮均读到 `-200` |
+| 断开与重连 | BOOTSEL 重启使实际 CDC 端口移除，Qt 触发断开清理。应用重启后同一设备重新连接，读回同一身份和周期 |
+| 超时恢复 | 实机将计数查询限时 1 ms，触发超时并取消排队查询。重开串口后重新读回 10 ns 周期 |
+| 电子负载兼容 | 真实 DRPD 与虚拟串口电子负载在同一 Qt 进程并行，测量、电流设定和开关读回通过。双实机回归待电子负载接入 |
+| `Source_Capabilities` | GPIO16 极性匹配后实机进入 `PE_SNK_READY`。经 `GET_SOURCE_CAP` 捕获的记录为 1428 字节，含 681 个脉宽计数和 34 字节解码数据。捕获记录的 28 字节消息正文与固件 inquiry 响应一致 |
+| 1020 字节示例 | 按计划书附属资料的真实报文字节和字段规格重建。时间戳和脉宽值使用测试数据 |
+
+三条完整的 CDC 原始块保存在 [实机测试样本](tests/fixtures/drpd_cdc_blocks.hex)，涵盖固件事件、
+Hard Reset 和 `Source_Capabilities`。本次联调的完整串口日志保存在 `tmp/drpd-cdc-before.jsonl`、
+`tmp/drpd-cdc-live.jsonl`、`tmp/drpd-cdc-live-extended.jsonl`、`tmp/drpd-cdc-source-cap.jsonl` 和
+`tmp/drpd-cdc-final-empty.jsonl`。
 
 ## 打包 Windows 程序
 
