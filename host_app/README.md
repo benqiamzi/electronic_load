@@ -89,6 +89,38 @@ electronic-load-host
 python -m unittest discover -s tests -v
 ```
 
+## DRPD 第一阶段
+
+DRPD 使用独立的 `DrpdDevice`。它在 Qt 事件循环中管理 USB CDC 串口、SCPI
+请求队列和捕获客户端。现有电子负载窗口和通信模块继续使用原有入口。
+
+- `device.transport.open(port, baud_rate=115200)` 打开串口并设置 DTR。关闭时清理串口缓冲。
+- `device.protocol` 提供 `command`、`query_text` 和 `query_binary`。同一串口只允许一项
+  查询在途。发生超时、响应错位或帧格式错误时，当前请求和排队请求都结束，重开串口后再发命令。
+- `device.capture` 提供启停捕获、查询周期和数量、单条读取、限量排空和定时轮询。
+  `capture_received` 返回 `CaptureRecord` 或 `FirmwareEvent`。`CaptureRecord`
+  保留完整的原始载荷、SOP、脉宽计数和解码数据。`pulse_widths_ns` 使用设备返回的周期转换。
+  `FirmwareEvent` 保留事件编号和原始文本字节，并通过 `text_encoding_valid` 标记无效 UTF-8。
+  空队列读取以 `None` 完成，周期缓存随断开清理。
+- 默认单条载荷上限为 `32 + 2 × 5600 + 262 = 11494` 字节，由当前 DRPD 固件的
+  脉宽和解码缓冲区配置推得。可通过 `DrpdDevice(max_payload_bytes=...)` 调整。
+
+使用独立探针做实机联调。在 `host_app` 目录执行，按枚举结果替换 `COM15`。
+
+```powershell
+python -m electronic_load_gui.devices.drpd --list
+python -m electronic_load_gui.devices.drpd COM15 --wire-log ../tmp/drpd-cdc-identity.jsonl
+python -m electronic_load_gui.devices.drpd COM15 --capture-seconds 10 --verify-empty --wire-log ../tmp/drpd-cdc-live.jsonl
+```
+
+普通探针读取身份、捕获周期和队列数量。`--capture-seconds` 期间接入 USB-PD 电源及被测设备，
+探针会启用捕获、分批读取并恢复原先的捕获开关。队列排空后，`--verify-empty` 会实际发送一次
+`BUS:CC:CAP:DATA?`，核对错误响应。`--wire-log` 将精确的串口收发字节逐片记录为十六进制，
+文件会以新建方式打开。
+
+实机验收还应关闭并重开串口，比较记录边界和内部 `0A`、`0D`、`00` 字节。同时接入电子负载时，
+在原窗口确认身份、实时测量及低电流设定和输入状态读回。两台设备各自占用一个串口。
+
 ## 打包 Windows 程序
 
 ```powershell
