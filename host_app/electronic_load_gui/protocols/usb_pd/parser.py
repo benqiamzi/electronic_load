@@ -1,0 +1,63 @@
+from ...devices.drpd.capture_record import CaptureRecord, DecodeResult, FirmwareEvent
+from .diagnostics import ParseDiagnostic, ParseStatus
+from .header import PDHeader, decode_header
+from .models import CaptureResult, FirmwareEventResult, PDMessageResult, ParseFailureResult, ResetResult
+from .sop import SopKind, classify_sop
+
+
+def _decode_body(raw: bytes, header: PDHeader) -> tuple[bytes | None, ParseStatus, ParseDiagnostic | None]:
+    if header.extended:
+        # The extended header determines the length of unchunked packets.
+        return None, ParseStatus.UNSUPPORTED, ParseDiagnostic(
+            "body", "extended_pending", "Extended message body decoding is pending."
+        )
+    expected = 2 + header.num_data_objects * 4 + 4
+    if len(raw) != expected:
+        status = ParseStatus.PARTIAL if len(raw) < expected else ParseStatus.INVALID
+        return None, status, ParseDiagnostic(
+            "body", "message_length", f"Expected {expected} captured bytes, received {len(raw)}."
+        )
+    return raw[2:-4], ParseStatus.VALID, None
+
+
+def parse_capture(record: CaptureRecord | FirmwareEvent) -> CaptureResult:
+    """Parse one offline capture and retain the original record in the result."""
+    if isinstance(record, FirmwareEvent):
+        return FirmwareEventResult(record)
+
+    sop = classify_sop(record.sop_bytes)
+    firmware_ok = record.decode_result == DecodeResult.SUCCESS
+    diagnostics = []
+    if not firmware_ok:
+        diagnostics.append(ParseDiagnostic(
+            "capture", "firmware_decode_failed", f"DRPD decode result {record.decode_result:#x}."
+        ))
+    if record.is_hard_reset or (sop.kind == SopKind.CABLE_RESET and firmware_ok and not record.decoded_data):
+        return ResetResult(record, sop)
+    if not sop.is_message:
+        status = ParseStatus.UNKNOWN if sop.kind == SopKind.UNKNOWN else ParseStatus.UNSUPPORTED
+        if sop.kind in (SopKind.HARD_RESET, SopKind.CABLE_RESET):
+            status = ParseStatus.INVALID
+        diagnostics.append(ParseDiagnostic("sop", "no_message_sop", f"No PD Header for {sop.kind}."))
+        return ParseFailureResult(record, sop, status, tuple(diagnostics))
+    if sop.matched_symbols == 3:
+        diagnostics.append(ParseDiagnostic("sop", "recovered_sop", "Three K-code symbols match."))
+
+    header, header_diagnostics = decode_header(record.decoded_data, sop.kind)
+    diagnostics.extend(header_diagnostics)
+    if header is None:
+        return ParseFailureResult(record, sop, ParseStatus.PARTIAL, tuple(diagnostics))
+    body, body_status, body_diagnostic = _decode_body(record.decoded_data, header)
+    if body_diagnostic is not None:
+        diagnostics.append(body_diagnostic)
+
+    header_status = ParseStatus.INVALID if header_diagnostics else ParseStatus.VALID
+    if header_status == ParseStatus.INVALID or body_status == ParseStatus.INVALID:
+        status = ParseStatus.INVALID
+    elif not firmware_ok:
+        status = ParseStatus.PARTIAL
+    else:
+        status = body_status
+    return PDMessageResult(
+        record, sop, header, body, header_status, body_status, status, tuple(diagnostics)
+    )
