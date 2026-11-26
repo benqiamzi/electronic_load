@@ -182,8 +182,57 @@ Hard Reset 和 `Source_Capabilities`。本次联调的完整串口日志保存�
 
 使用 `electronic_load_gui.protocols.usb_pd.parse_capture(record)` 离线解析第一阶段的
 `CaptureRecord` 或 `FirmwareEvent`。结果持有原捕获记录，分别记录 Header、正文、消息类型和 CRC 状态。
-控制消息提供类型名称，普通数据消息提供正文与小端拆分得到的原始 32 位对象。PDO/RDO/VDO 字段和
-Extended Message 重组属于后续里程碑。
+控制消息提供类型名称，普通数据消息提供正文与小端拆分得到的原始 32 位对象。
+
+### PDO/RDO 语义解析
+
+- `PDMessageResult.pdos` 按报文顺序提供 Source 和 Sink 的 Fixed、Variable、Battery 与 PPS 能力对象。
+  字段使用整数 mV、mA 和 mW。SPR AVS 与 EPR AVS 可读取已定义的能力字段，完整请求关联待实现。
+- `PDMessageResult.rdo` 提供 Request 对象位置、通用标志和诊断。缺少前序能力时，RDO 状态为
+  `context_missing`，报文自身的 `parse_status` 和 `crc_valid` 仍反映基础解析结果。
+- 每条捕获链路使用一个 `PDSessionContext`。按捕获顺序调用 `consume()`，从 `analysis.rdo`
+  读取与 Source PDO 关联后的 Fixed、Variable、Battery 或 PPS 请求及越界诊断。
+  设备断开时调用 `disconnect()`，捕获中断时可调用 `reset()`。
+
+```python
+from electronic_load_gui.protocols.usb_pd import PDSessionContext, parse_capture
+
+session = PDSessionContext()
+for record in captured_records:
+    analysis = session.consume(parse_capture(record))
+    if analysis.rdo is not None:
+        print(analysis.rdo.object_position, analysis.rdo.status, analysis.rdo.selected_pdo)
+```
+
+回放覆盖同一轮实机捕获的七个 Source PDO 和随后发送的 Request。位域依据规范表 6.8–6.25。
+样本和验收结果见 [M4 验收报告](DRPD_第二阶段_M4_验收报告.md)。
+
+### VDM/VDO 语义解析
+
+- `PDMessageResult.vdm` 提供 Structured/Unstructured VDM 类型、SVID、命令、响应类型和原始 VDO。
+  Discover Identity 解码 ID Header、Cert Stat 和 Product，按产品类型标注后续 VDO。
+  Discover SVIDs 读取高半字优先的 SVID 对，Discover Modes 保留按一基位置排列的 Mode VDO。
+- `VDMContext` 按 SOP 和 SOP 响应端数据角色关联 Identity、SVIDs、Modes 及 Mode 事件。
+  支持 SVID 分页与重试识别。会话关联状态在 `analysis.status`，单帧语义状态在 `result.vdm.status`。
+- 捕获中存在前序发现请求时，可从 `analysis.request` 回溯该帧。命令或 SVID 错配的响应保留原始字，
+  并给出 `vdm_discovery_response_mismatch`，该响应不会写入发现缓存。
+- 可为 `parse_capture(record, vdo_registry=registry)` 传入 `VDORegistry`，按 SVID 注册自定义解码器，
+  也可指定 `command` 和 `position`。解码器的返回值放在 `VDOInfo.vendor_fields`，原始字与标准字段始终可读。
+
+```python
+from electronic_load_gui.protocols.usb_pd import VDMContext, parse_capture
+
+context = VDMContext()
+for record in captured_records:
+    result = parse_capture(record)
+    analysis = context.consume(result)
+    if getattr(result, "vdm", None) is not None:
+        print(result.vdm.command_name, result.vdm.status, analysis.mode)
+```
+
+每条捕获链路使用独立的 `VDMContext`，设备断开时调用 `disconnect()`，捕获中断时可调用 `reset()`。
+DisplayPort 等模式专用字段可通过注册表扩展。Extended Message 重组和 GUI 展示按后续里程碑交付。
+真实 Identity、SVIDs 和 Modes 回放结果见 [M5 验收报告](DRPD_第二阶段_M5_验收报告.md)。
 
 ## 打包 Windows 程序
 

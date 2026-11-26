@@ -167,6 +167,17 @@ class RealCaptureTests(unittest.TestCase):
 
 
 class HeaderAndSopTests(unittest.TestCase):
+    def test_synthetic_cable_reset_is_a_separate_capture_result(self) -> None:
+        record = replace(synthetic_message(0, sop="07180706"), decoded_data=b"")
+        result = parse_capture(record)
+        self.assertIsInstance(result, ResetResult)
+        self.assertEqual(result.sop.kind, SopKind.CABLE_RESET)
+        self.assertIs(result.record, record)
+        for invalid in (replace(record, decode_result=1), replace(record, decoded_data=b"\x00")):
+            result = parse_capture(invalid)
+            self.assertIsInstance(result, ParseFailureResult)
+            self.assertEqual(result.parse_status, ParseStatus.INVALID)
+
     def test_synthetic_alternate_ordered_sets(self) -> None:
         for text, expected in (
             ("18180606", SopKind.SOP_PRIME), ("18061806", SopKind.SOP_DOUBLE_PRIME),

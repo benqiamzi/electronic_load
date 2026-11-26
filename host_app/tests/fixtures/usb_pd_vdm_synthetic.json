@@ -1,0 +1,35 @@
+{
+  "provenance": "synthetic",
+  "records": [
+    {
+      "kind": "discover_identity_drd_ack",
+      "provenance": "synthetic",
+      "sop_hex": "18181811",
+      "words_hex": ["ff00a841", "d5401209", "12345678", "43210123", "60000001", "00000000", "20000020"]
+    },
+    {
+      "kind": "discover_identity_passive_cable_ack",
+      "provenance": "synthetic",
+      "sop_hex": "18180606",
+      "words_hex": ["ff00a041", "18601209", "12345678", "43210123", "02482010"]
+    },
+    {
+      "kind": "discover_svids_ack",
+      "provenance": "synthetic",
+      "sop_hex": "18181811",
+      "words_hex": ["ff00a842", "ff011209", "28de0000"]
+    },
+    {
+      "kind": "discover_modes_ack",
+      "provenance": "synthetic",
+      "sop_hex": "18181811",
+      "words_hex": ["ff01a843", "00000405", "12345678"]
+    },
+    {
+      "kind": "unstructured",
+      "provenance": "synthetic",
+      "sop_hex": "18181811",
+      "words_hex": ["1209567e", "89abcdef"]
+    }
+  ]
+}

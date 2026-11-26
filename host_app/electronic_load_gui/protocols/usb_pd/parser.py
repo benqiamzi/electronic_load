@@ -5,8 +5,12 @@ from .crc import calculate_crc32
 from .diagnostics import ParseDiagnostic, ParseStatus
 from .header import PDHeader, decode_header
 from .message_types import MessageCategory, classify_message
-from .models import CaptureResult, FirmwareEventResult, PDMessageResult, ParseFailureResult, ResetResult
+from .models import CaptureResult, FirmwareEventResult, PDMessageResult, PDODirection, ParseFailureResult, ResetResult
+from .pdo import decode_pdo
+from .rdo import decode_rdo
 from .sop import SopKind, classify_sop
+from .vdm import decode_vdm
+from .vdo_decoders import VDORegistry
 
 
 def _decode_body(raw: bytes, header: PDHeader) -> tuple[bytes | None, ParseStatus, ParseDiagnostic | None]:
@@ -24,7 +28,7 @@ def _decode_body(raw: bytes, header: PDHeader) -> tuple[bytes | None, ParseStatu
     return raw[2:-4], ParseStatus.VALID, None
 
 
-def parse_capture(record: CaptureRecord | FirmwareEvent) -> CaptureResult:
+def parse_capture(record: CaptureRecord | FirmwareEvent, *, vdo_registry: VDORegistry | None = None) -> CaptureResult:
     """Parse one offline capture and retain the original record in the result."""
     if isinstance(record, FirmwareEvent):
         return FirmwareEventResult(record)
@@ -82,10 +86,25 @@ def parse_capture(record: CaptureRecord | FirmwareEvent) -> CaptureResult:
         status = message_type.status
     else:
         status = body_status
+
+    pdos = ()
+    rdo = None
+    vdm = None
+    if status == ParseStatus.VALID and valid is True:
+        if message_type.name in ("Source_Capabilities", "Sink_Capabilities"):
+            direction = PDODirection.SOURCE if message_type.name == "Source_Capabilities" else PDODirection.SINK
+            pdos = tuple(decode_pdo(word, direction=direction, revision=header.spec_revision, index=index)
+                         for index, word in enumerate(objects, 1))
+        elif message_type.name == "Request":
+            rdo = decode_rdo(objects[0], revision=header.spec_revision)
+        elif message_type.name == "Vendor_Defined":
+            vdm = decode_vdm(objects, sop=sop.kind, revision=header.spec_revision,
+                             data_role=header.data_role, cable_plug=header.cable_plug, registry=vdo_registry)
+
     return PDMessageResult(
         record=record, sop=sop, header=header, message_type=message_type,
         body=body, data_objects=objects,
         header_status=header_status, body_status=body_status, parse_status=status,
         diagnostics=tuple(diagnostics), crc_received=received,
-        crc_calculated=calculated, crc_valid=valid,
+        crc_calculated=calculated, crc_valid=valid, pdos=pdos, rdo=rdo, vdm=vdm,
     )
