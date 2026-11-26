@@ -13,6 +13,7 @@ from electronic_load_gui.protocols.usb_pd import parse_capture
 from electronic_load_gui.protocols.usb_pd.crc import calculate_crc32
 from electronic_load_gui.protocols.usb_pd.diagnostics import ParseStatus
 from electronic_load_gui.protocols.usb_pd.header import decode_header
+from electronic_load_gui.protocols.usb_pd.message_types import MessageCategory
 from electronic_load_gui.protocols.usb_pd.models import (
     FirmwareEventResult,
     PDMessageResult,
@@ -35,6 +36,12 @@ def reference_crc32(data: bytes) -> int:
             if feedback:
                 register ^= 0x04C11DB7
     return int(f"{register:032b}"[::-1], 2) ^ 0xFFFFFFFF
+
+
+def synthetic_message(value: int, words: tuple[int, ...] = (), *, sop: str = "18181811") -> CaptureRecord:
+    payload = value.to_bytes(2, "little") + b"".join(word.to_bytes(4, "little") for word in words)
+    raw = payload + reference_crc32(payload).to_bytes(4, "little")
+    return CaptureRecord(0, 0, 0, bytes.fromhex(sop), (), raw, b"", 10.0)
 
 
 class RealCaptureTests(unittest.TestCase):
@@ -122,6 +129,9 @@ class RealCaptureTests(unittest.TestCase):
         self.assertEqual((header.power_role, header.data_role, header.cable_plug), (1, 1, None))
         self.assertFalse(header.extended)
         self.assertEqual(result.body, record.decoded_data[2:-4])
+        self.assertEqual(result.message_type.category, MessageCategory.DATA)
+        self.assertEqual(result.message_type.name, "Source_Capabilities")
+        self.assertEqual(result.data_objects, tuple(int(word, 16) for word in sample["pdo_hex"]))
         self.assertEqual(result.parse_status, ParseStatus.VALID)
 
     def test_real_reset_and_event_have_separate_results(self) -> None:
@@ -193,3 +203,49 @@ class HeaderAndSopTests(unittest.TestCase):
                 header, diagnostics = decode_header(value.to_bytes(2, "little"), SopKind.SOP)
                 self.assertEqual((header.message_id, header.num_data_objects), (message_id, count))
                 self.assertEqual(diagnostics, ())
+
+
+class MessageTypeTests(unittest.TestCase):
+    def test_synthetic_control_messages(self) -> None:
+        for code, name in (
+            (3, "Accept"), (4, "Reject"), (6, "PS_RDY"), (7, "Get_Source_Cap"),
+            (8, "Get_Sink_Cap"), (9, "DR_Swap"), (10, "PR_Swap"), (11, "VCONN_Swap"),
+            (12, "Wait"), (13, "Soft_Reset"), (16, "Not_Supported"),
+        ):
+            with self.subTest(code=code):
+                result = parse_capture(synthetic_message(0x80 | code))
+                self.assertIsInstance(result, PDMessageResult)
+                self.assertEqual(result.message_type.category, MessageCategory.CONTROL)
+                self.assertEqual(result.message_type.name, name)
+                self.assertEqual(result.data_objects, ())
+                self.assertIs(result.crc_valid, True)
+
+    def test_synthetic_data_messages_keep_little_endian_words(self) -> None:
+        for code, name in ((2, "Request"), (4, "Sink_Capabilities"), (15, "Vendor_Defined")):
+            with self.subTest(code=code):
+                result = parse_capture(synthetic_message(0x1080 | code, (0x10203040,)))
+                self.assertEqual(result.message_type.category, MessageCategory.DATA)
+                self.assertEqual(result.message_type.name, name)
+                self.assertEqual(result.data_objects, (0x10203040,))
+
+    def test_synthetic_unknown_type_and_invalid_context(self) -> None:
+        unknown = parse_capture(synthetic_message(0x108D, (0x12345678,)))
+        self.assertEqual(unknown.message_type.code, 13)
+        self.assertIsNone(unknown.message_type.name)
+        self.assertEqual(unknown.parse_status, ParseStatus.UNKNOWN)
+        self.assertEqual(unknown.data_objects, (0x12345678,))
+        for record in (
+            synthetic_message(0x0050),  # Not_Supported is unavailable in PD 2.0.
+            synthetic_message(0x0086, sop="18180606"),  # PS_RDY is SOP only.
+        ):
+            with self.subTest(header=record.decoded_data[:2].hex()):
+                result = parse_capture(record)
+                self.assertEqual(result.message_type.status, ParseStatus.INVALID)
+                self.assertIs(result.crc_valid, True)
+
+    def test_synthetic_request_with_two_objects_has_a_body_diagnostic(self) -> None:
+        result = parse_capture(synthetic_message(0x2082, (1, 2)))
+        self.assertEqual(result.message_type.name, "Request")
+        self.assertEqual(result.body_status, ParseStatus.INVALID)
+        self.assertEqual(result.data_objects, (1, 2))
+        self.assertIs(result.crc_valid, True)

@@ -1,7 +1,10 @@
+from struct import iter_unpack
+
 from ...devices.drpd.capture_record import CaptureRecord, DecodeResult, FirmwareEvent
 from .crc import calculate_crc32
 from .diagnostics import ParseDiagnostic, ParseStatus
 from .header import PDHeader, decode_header
+from .message_types import MessageCategory, classify_message
 from .models import CaptureResult, FirmwareEventResult, PDMessageResult, ParseFailureResult, ResetResult
 from .sop import SopKind, classify_sop
 
@@ -52,6 +55,15 @@ def parse_capture(record: CaptureRecord | FirmwareEvent) -> CaptureResult:
     body, body_status, body_diagnostic = _decode_body(raw, header)
     if body_diagnostic is not None:
         diagnostics.append(body_diagnostic)
+    message_type, type_diagnostic = classify_message(header, sop.kind)
+    if type_diagnostic is not None:
+        diagnostics.append(type_diagnostic)
+    objects = ()
+    if body is not None and message_type.category == MessageCategory.DATA:
+        objects = tuple(word for (word,) in iter_unpack("<I", body))
+        if message_type.name == "Request" and len(objects) != 1:
+            body_status = ParseStatus.INVALID
+            diagnostics.append(ParseDiagnostic("body", "request_object_count", "Request requires exactly one RDO."))
 
     received = calculated = valid = None
     if firmware_ok and body is not None:
@@ -62,14 +74,17 @@ def parse_capture(record: CaptureRecord | FirmwareEvent) -> CaptureResult:
             diagnostics.append(ParseDiagnostic("crc", "crc_mismatch", "Received CRC32 does not match the host calculation."))
 
     header_status = ParseStatus.INVALID if header_diagnostics else ParseStatus.VALID
-    if header_status == ParseStatus.INVALID or body_status == ParseStatus.INVALID or valid is False:
+    if ParseStatus.INVALID in (header_status, body_status, message_type.status) or valid is False:
         status = ParseStatus.INVALID
-    elif not firmware_ok:
+    elif not firmware_ok or body_status == ParseStatus.PARTIAL:
         status = ParseStatus.PARTIAL
+    elif body_status == ParseStatus.VALID:
+        status = message_type.status
     else:
         status = body_status
     return PDMessageResult(
-        record=record, sop=sop, header=header, body=body,
+        record=record, sop=sop, header=header, message_type=message_type,
+        body=body, data_objects=objects,
         header_status=header_status, body_status=body_status, parse_status=status,
         diagnostics=tuple(diagnostics), crc_received=received,
         crc_calculated=calculated, crc_valid=valid,

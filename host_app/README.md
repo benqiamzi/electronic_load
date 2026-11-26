@@ -180,6 +180,11 @@ Hard Reset 和 `Source_Capabilities`。本次联调的完整串口日志保存�
 实机 `Source_Capabilities` 的 Header 为 `0x77A1`，消息 ID 为 3，携带 7 个 PDO。
 发送端为 Source / DFP，主机 CRC 基准为 `0x34737FBF`。用来补齐失败或保留位的人工构造输入在测试中标注为 synthetic。
 
+使用 `electronic_load_gui.protocols.usb_pd.parse_capture(record)` 离线解析第一阶段的
+`CaptureRecord` 或 `FirmwareEvent`。结果持有原捕获记录，分别记录 Header、正文、消息类型和 CRC 状态。
+控制消息提供类型名称，普通数据消息提供正文与小端拆分得到的原始 32 位对象。PDO/RDO/VDO 字段和
+Extended Message 重组属于后续里程碑。
+
 ## 打包 Windows 程序
 
 ```powershell

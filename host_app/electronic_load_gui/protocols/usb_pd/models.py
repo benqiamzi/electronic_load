@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from ...devices.drpd.capture_record import CaptureRecord, FirmwareEvent
 from .diagnostics import ParseDiagnostic, ParseStatus
 from .header import PDHeader
+from .message_types import MessageTypeInfo
 from .sop import SopInfo
 
 
@@ -11,7 +12,9 @@ class PDMessageResult:
     record: CaptureRecord
     sop: SopInfo
     header: PDHeader
+    message_type: MessageTypeInfo
     body: bytes | None
+    data_objects: tuple[int, ...]
     header_status: ParseStatus
     body_status: ParseStatus
     parse_status: ParseStatus
