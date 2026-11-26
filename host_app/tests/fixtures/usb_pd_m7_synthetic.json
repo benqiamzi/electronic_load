@@ -1,0 +1,38 @@
+{
+  "provenance": "synthetic",
+  "description": "Mixed SOP and cable traffic built from USB PD R3.2 V1.1 data words and M6 EPR vectors.",
+  "steps": [
+    {"id": "source", "header": "3181", "words": ["0081912c", "000640c8", "e004b096"]},
+    {"id": "request", "header": "1082", "words": ["10019064"]},
+    {"id": "accept", "header": "0183"},
+    {"id": "identity", "header": "408f", "words": ["ff00a841", "00401209", "11223344", "abcd0100"]},
+    {"id": "svids", "header": "208f", "words": ["ff00a842", "ff010000"]},
+    {"id": "modes", "header": "208f", "words": ["ff01a843", "00000405"]},
+    {"id": "enter_mode", "header": "10af", "words": ["ff01a904"]},
+    {"id": "unstructured", "header": "208f", "words": ["12090123", "aabbccdd"]},
+    {"id": "unchunked", "type": 2, "data_hex": "010203"},
+    {"id": "cable_chunk", "type": 2, "chunk": 0, "total": 30, "repeat_data": 26, "sop": "18180606"},
+    {"id": "epr_chunk_zero", "type": 17, "epr_chunk": 0},
+    {"id": "cable_reset", "reset": "07180706"},
+    {"id": "epr_chunk_request", "type": 17, "chunk": 1, "request": true, "sender": 0},
+    {"id": "epr_chunk_one", "type": 17, "epr_chunk": 1, "message_id": 1},
+    {"id": "epr_avs", "header": "2089", "words": ["9048c055", "d2309678"]},
+    {"id": "epr_fixed", "header": "2089", "words": ["8043e8fa", "0008c12c"]},
+    {"id": "spr_avs", "header": "1082", "words": ["3004b81e"]},
+    {"id": "unknown_vdm", "header": "108f", "words": ["1209a80f"]},
+    {"id": "unknown_extended", "type": 31, "data_hex": "1234"},
+    {"id": "soft_reset", "header": "008d"},
+    {"id": "hard_reset", "reset": "07070719"},
+    {"id": "epr_after_reset", "header": "2089", "words": ["9048c055", "d2309678"]}
+  ],
+  "expected": {
+    "request_ma": 1000,
+    "mode_raw": "00000405",
+    "epr_slots": 9,
+    "epr_avs_mv": 28000,
+    "epr_avs_ma": 4250,
+    "epr_fixed_ma": 2500,
+    "spr_avs_mv": 15100,
+    "spr_avs_ma": 1500
+  }
+}

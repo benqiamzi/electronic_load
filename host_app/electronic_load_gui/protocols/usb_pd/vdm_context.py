@@ -4,6 +4,7 @@ from dataclasses import dataclass, field, replace
 from .diagnostics import ParseDiagnostic, ParseStatus
 from .models import CaptureResult, PDMessageResult, ResetResult, VDMCommand, VDMCommandType, VDOInfo
 from .sop import SopKind
+from .vdm import PD_SID
 
 
 @dataclass(frozen=True, slots=True)
@@ -24,12 +25,14 @@ class _Discovery:
     last_svid_reply: VDMAnalysis | None = None
     pending_svids: dict[int, None] = field(default_factory=dict)
     pending_sources: list[PDMessageResult] = field(default_factory=list)
+    svid_paging_interrupted: bool = False
     modes: dict[int, PDMessageResult] = field(default_factory=dict)
 
     def discard_pending(self) -> None:
         self.pending_svids.clear()
         self.pending_sources.clear()
         self.last_svid_reply = None
+        self.svid_paging_interrupted = False
 
 
 _MODE_EVENTS = (VDMCommand.ENTER_MODE, VDMCommand.EXIT_MODE, VDMCommand.ATTENTION)
@@ -96,10 +99,20 @@ class VDMContext:
         same_page = last is not None and last.result.data_objects == result.data_objects
         if same_page and (observed.pending_sources or last.result.header.message_id == result.header.message_id):
             return replace(last, result=result)
+        if observed.svid_paging_interrupted:
+            analysis = _missing(result, "An invalid SVID page interrupted this list before its terminator.")
+            if result.vdm.svids_terminated:
+                observed.discard_pending()
+                observed.last_svid_reply = analysis
+            return analysis
         if any(svid in observed.pending_svids for svid in page):
             observed.discard_pending()
+            observed.svid_paging_interrupted = not result.vdm.svids_terminated
             issue = ParseDiagnostic("vdm_context", "vdm_duplicate_svid_page", "Distinct SVID pages overlap.")
-            return VDMAnalysis(result, ParseStatus.INVALID, diagnostics=(issue,))
+            analysis = VDMAnalysis(result, ParseStatus.INVALID, diagnostics=(issue,))
+            if result.vdm.svids_terminated:
+                observed.last_svid_reply = analysis
+            return analysis
         if not page and not observed.pending_sources:
             return _missing(result, "The terminating SVID page has no observed preceding page.")
 
@@ -134,14 +147,19 @@ class VDMContext:
 
     def _record_discovery(self, result: PDMessageResult) -> VDMAnalysis:
         sop, vdm = result.sop.kind, result.vdm
-        if vdm.status not in (ParseStatus.VALID, ParseStatus.PARTIAL):
-            return VDMAnalysis(result, vdm.status)
         initiator = vdm.command_type == VDMCommandType.INITIATOR
         role = result.header.data_role
         if initiator and sop == SopKind.SOP:
             role = 1 - role
         key = (sop, role)
         observed = self._discoveries.get(key)
+        if vdm.status not in (ParseStatus.VALID, ParseStatus.PARTIAL):
+            if (vdm.command == VDMCommand.DISCOVER_SVIDS and vdm.svid == PD_SID
+                    and vdm.command_type == VDMCommandType.ACK and result.header.cable_plug is not False
+                    and observed is not None and observed.pending_sources):
+                observed.discard_pending()
+                observed.svid_paging_interrupted = True
+            return VDMAnalysis(result, vdm.status)
         if initiator:
             if observed is None:
                 observed = _Discovery()

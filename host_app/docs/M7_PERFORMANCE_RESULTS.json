@@ -1,0 +1,150 @@
+{
+  "environment": {
+    "platform": "Windows-11-10.0.26200-SP0",
+    "python": "3.13.2",
+    "pyside6_loaded": false
+  },
+  "m6_equivalent": [
+    {
+      "frames": 76000,
+      "complete": 4000,
+      "seconds": 4.952754999998433,
+      "frames_per_second": 15344.99485640296,
+      "us_per_frame": 65.16782894734781,
+      "payload_kib_per_second": 205.06263685571392,
+      "peak_cached_bytes": 468,
+      "final_active": 0,
+      "final_cached_bytes": 0
+    },
+    {
+      "frames": 76000,
+      "complete": 4000,
+      "seconds": 4.793250000002445,
+      "frames_per_second": 15855.630313453552,
+      "us_per_frame": 63.06907894740059,
+      "payload_kib_per_second": 211.8865070671219,
+      "peak_cached_bytes": 468,
+      "final_active": 0,
+      "final_cached_bytes": 0
+    },
+    {
+      "frames": 76000,
+      "complete": 4000,
+      "seconds": 5.316101799995522,
+      "frames_per_second": 14296.18973813933,
+      "us_per_frame": 69.94870789467792,
+      "payload_kib_per_second": 191.0469434578652,
+      "peak_cached_bytes": 468,
+      "final_active": 0,
+      "final_cached_bytes": 0
+    }
+  ],
+  "m6_equivalent_median": {
+    "frames": 76000,
+    "complete": 4000,
+    "seconds": 4.952754999998433,
+    "frames_per_second": 15344.99485640296,
+    "us_per_frame": 65.16782894734781,
+    "payload_kib_per_second": 205.06263685571392,
+    "peak_cached_bytes": 468,
+    "final_active": 0,
+    "final_cached_bytes": 0
+  },
+  "memory": [
+    {
+      "frames": 7600,
+      "complete": 400,
+      "seconds": 2.4782495999970706,
+      "frames_per_second": 3066.680611996864,
+      "us_per_frame": 326.08547368382506,
+      "payload_kib_per_second": 40.981546007359405,
+      "peak_cached_bytes": 468,
+      "final_active": 0,
+      "final_cached_bytes": 0,
+      "traced_current_bytes": 3728,
+      "traced_peak_bytes": 29769
+    },
+    {
+      "frames": 76000,
+      "complete": 4000,
+      "seconds": 27.102821699998458,
+      "frames_per_second": 2804.136072665981,
+      "us_per_frame": 356.6160749999797,
+      "payload_kib_per_second": 37.47303551054456,
+      "peak_cached_bytes": 468,
+      "final_active": 0,
+      "final_cached_bytes": 0,
+      "traced_current_bytes": 3736,
+      "traced_peak_bytes": 29769
+    }
+  ],
+  "supplemental": {
+    "ordinary_pd": {
+      "frames": 30000,
+      "complete": 0,
+      "seconds": 1.0326428000043961,
+      "frames_per_second": 29051.6720785467,
+      "us_per_frame": 34.421426666813204,
+      "payload_kib_per_second": 0.0,
+      "peak_cached_bytes": 0,
+      "final_active": 0,
+      "final_cached_bytes": 0
+    },
+    "vdm_vdo": {
+      "frames": 30000,
+      "complete": 0,
+      "seconds": 2.7605051999998977,
+      "frames_per_second": 10867.575978484341,
+      "us_per_frame": 92.01683999999659,
+      "payload_kib_per_second": 0.0,
+      "peak_cached_bytes": 0,
+      "final_active": 0,
+      "final_cached_bytes": 0
+    },
+    "single_extended": {
+      "frames": 15000,
+      "complete": 15000,
+      "seconds": 1.032564099994488,
+      "frames_per_second": 14526.943169997941,
+      "us_per_frame": 68.83760666629921,
+      "payload_kib_per_second": 99.30527557615781,
+      "peak_cached_bytes": 0,
+      "final_active": 0,
+      "final_cached_bytes": 0
+    },
+    "multi_chunk_sop": {
+      "frames": 19000,
+      "complete": 1000,
+      "seconds": 1.191684899997199,
+      "frames_per_second": 15943.811992620414,
+      "us_per_frame": 62.720257894589416,
+      "payload_kib_per_second": 213.06492177638302,
+      "peak_cached_bytes": 468,
+      "final_active": 0,
+      "final_cached_bytes": 0
+    },
+    "concurrent_sops": {
+      "frames": 28500,
+      "complete": 1500,
+      "seconds": 2.009505200003332,
+      "frames_per_second": 14182.595795200104,
+      "us_per_frame": 70.50895438608183,
+      "payload_kib_per_second": 189.52893229605402,
+      "peak_cached_bytes": 1404,
+      "final_active": 0,
+      "final_cached_bytes": 0
+    },
+    "incomplete_and_expiry": {
+      "frames": 9000,
+      "complete": 0,
+      "seconds": 0.7415557999993325,
+      "frames_per_second": 12136.645684664729,
+      "us_per_frame": 82.39508888881473,
+      "payload_kib_per_second": 0.0,
+      "peak_cached_bytes": 114,
+      "final_active": 0,
+      "final_cached_bytes": 0,
+      "expired": 9000
+    }
+  }
+}

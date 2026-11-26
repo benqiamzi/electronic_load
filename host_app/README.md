@@ -257,6 +257,34 @@ for record in captured_records:
 
 每条捕获链路使用各自的重组器和会话。断开时调用两者的 `disconnect()`。离线回放结束后可用 `expire(timestamp_us)` 取出超过保留时限的部分传输。实机帧、边界和性能数据见 [M6 验收报告](DRPD_第二阶段_M6_验收报告.md)。
 
+### 第二阶段发布与回归
+
+协议公共模型与诊断代码按 M7 冻结，第三阶段界面可以直接读取解析结果。实机、构造和语义支持范围见 [协议支持矩阵](docs/USB_PD_PROTOCOL_SUPPORT_MATRIX.md) 与 [第二阶段最终验收报告](docs/DRPD_第二阶段最终验收报告.md)。
+
+从 `host_app` 目录运行全量回归。
+
+```powershell
+$env:QT_QPA_PLATFORM = 'offscreen'
+python -m unittest discover -s tests
+```
+
+以下命令运行纯 Python 协议回归与完整压力。实际捕获和构造样本可统一离线回放。
+
+```powershell
+'usb_pd', 'pdo', 'rdo', 'pd_session', 'vdm', 'vdo', 'vdm_context', 'extended',
+'reassembly', 'extended_context', 'epr', 'protocol_*' | ForEach-Object {
+    python -S -m unittest discover -s tests -p "test_$_.py"
+    if ($LASTEXITCODE -ne 0) { throw "Protocol test group failed: $_" }
+}
+$env:M7_FULL_STRESS = '1'
+python -S -m unittest discover -s tests -p test_protocol_stress.py -v
+$m7StressExit = $LASTEXITCODE
+Remove-Item Env:M7_FULL_STRESS
+if ($m7StressExit -ne 0) { throw 'Full M7 stress test failed.' }
+```
+
+独立运行 `python -S tests/protocol_benchmark.py`，可复跑 M6 等价负载和 M7 补充场景。测试索引与实测口径见 [M7 测试覆盖清单](docs/M7_TEST_COVERAGE.md) 和 [M7 性能报告](docs/M7_PERFORMANCE_REPORT.md)。
+
 ## 打包 Windows 程序
 
 ```powershell
