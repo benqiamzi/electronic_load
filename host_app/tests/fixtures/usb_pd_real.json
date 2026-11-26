@@ -1,0 +1,43 @@
+{
+  "capture_date": "2026-11-25",
+  "firmware_version": "1.0.0-beta.1",
+  "capture_cycle_ns": 10.0,
+  "records": [
+    {
+      "kind": "firmware_event",
+      "provenance": "real",
+      "wire_file": "drpd_cdc_blocks.hex",
+      "wire_line": 1,
+      "payload_bytes": 152,
+      "timestamp_us": 59755786,
+      "event_type": 9
+    },
+    {
+      "kind": "hard_reset",
+      "provenance": "real",
+      "wire_file": "drpd_cdc_blocks.hex",
+      "wire_line": 2,
+      "payload_bytes": 288,
+      "start_timestamp_us": 154340668,
+      "end_timestamp_us": 154340945,
+      "sop_hex": "07070719",
+      "pulse_count": 128
+    },
+    {
+      "kind": "source_capabilities",
+      "provenance": "real",
+      "wire_file": "drpd_cdc_blocks.hex",
+      "wire_line": 3,
+      "payload_bytes": 1428,
+      "start_timestamp_us": 32788569,
+      "end_timestamp_us": 32789980,
+      "decode_result": 0,
+      "sop_hex": "18181811",
+      "pulse_count": 681,
+      "decoded_hex": "a1772c91010a2cd102002cc103002cb10400f44106006432dcc8643290c9bf7f7334",
+      "header_hex": "77a1",
+      "crc_hex": "34737fbf",
+      "pdo_hex": ["0a01912c", "0002d12c", "0003c12c", "0004b12c", "000641f4", "c8dc3264", "c9903264"]
+    }
+  ]
+}

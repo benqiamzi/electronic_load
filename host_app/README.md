@@ -159,6 +159,27 @@ Hard Reset 和 `Source_Capabilities`。本次联调的完整串口日志保存�
 `tmp/drpd-cdc-live.jsonl`、`tmp/drpd-cdc-live-extended.jsonl`、`tmp/drpd-cdc-source-cap.jsonl` 和
 `tmp/drpd-cdc-final-empty.jsonl`。双实机电压验收结果保存在 `tmp/drpd-dual-voltage-6p2.jsonl`。
 
+## USB-PD 第二阶段协议基线
+
+协议解析以 USB PD Revision 3.2 Version 1.1（2024-10）为基准。按表 5.1、5.5–5.9、
+5.11–5.12 校对 4b5b 有序集，按表 6.1 和 §6.2.1.1 校对 Header，按 §5.6.2 和表 5.10
+校对 CRC。交叉核对使用 DRPD Python 的 `message/sop.py`、`header.py` 和 `bmc_sequence.py`，
+以及固件的 `lib/proto/pd_sop.cpp` 和 `lib/phy/bmc_encoded_message.cpp`。
+[USB-IF 规范版本说明](https://usb.org/euconformity)
+
+- 对有序集优先匹配全部四项。普通 SOP 有唯一的三项匹配时可识别，并保留原字节和匹配项数。
+  多候选保留为未知。Hard Reset 以第一阶段 `CaptureRecord.is_hard_reset` 为准。
+- Header 使用小端序，位域按 `15 / 14:12 / 11:9 / 8 / 7:6 / 5 / 4:0` 分别读取扩展标志、
+  对象数、消息 ID、功率角色或 Cable Plug、规范版本、数据角色或保留位、消息类型。
+  Header 线上 `10b` 表示 3.x。普通消息按对象数检查正文长度。
+- CRC 使用多项式 `0x04C11DB7`（反射 `0xEDB88320`），初始值和最终异或均为
+  `0xFFFFFFFF`，输入和输出均反射。计算范围是 Header 和整个消息正文，接收 CRC 按小端解释。
+  测试使用按位参考计算核对实机样本及损坏副本。
+
+[实机样本索引](tests/fixtures/usb_pd_real.json) 引用三个原始 SCPI 块，并标注捕获日期、固件版本及来源。
+实机 `Source_Capabilities` 的 Header 为 `0x77A1`，消息 ID 为 3，携带 7 个 PDO。
+发送端为 Source / DFP，主机 CRC 基准为 `0x34737FBF`。用来补齐失败或保留位的人工构造输入在测试中标注为 synthetic。
+
 ## 打包 Windows 程序
 
 ```powershell
