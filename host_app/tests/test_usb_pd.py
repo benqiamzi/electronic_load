@@ -10,6 +10,7 @@ from electronic_load_gui.devices.drpd.capture_record import (
     FirmwareEvent,
 )
 from electronic_load_gui.protocols.usb_pd import parse_capture
+from electronic_load_gui.protocols.usb_pd.crc import calculate_crc32
 from electronic_load_gui.protocols.usb_pd.diagnostics import ParseStatus
 from electronic_load_gui.protocols.usb_pd.header import decode_header
 from electronic_load_gui.protocols.usb_pd.models import (
@@ -70,6 +71,39 @@ class RealCaptureTests(unittest.TestCase):
         self.assertEqual(reference_crc32(b"123456789"), 0xCBF43926)
         self.assertEqual(reference_crc32(raw[:-4]), int(sample["crc_hex"], 16))
         self.assertEqual(reference_crc32(raw[:-4]), int.from_bytes(raw[-4:], "little"))
+        self.assertEqual(calculate_crc32(raw[:-4]), reference_crc32(raw[:-4]))
+        parsed = parse_capture(record)
+        self.assertEqual(parsed.crc_received, 0x34737FBF)
+        self.assertEqual(parsed.crc_calculated, 0x34737FBF)
+        self.assertIs(parsed.crc_valid, True)
+
+    def test_synthetic_one_byte_damage_does_not_change_firmware_status(self) -> None:
+        _, record = self.captures["source_capabilities"]
+        damaged = bytearray(record.decoded_data)
+        damaged[2] ^= 0x01
+        parsed = parse_capture(replace(record, decoded_data=bytes(damaged)))
+        self.assertEqual(parsed.firmware_decode_result, 0)
+        self.assertEqual(parsed.body_status, ParseStatus.VALID)
+        self.assertEqual(parsed.crc_received, 0x34737FBF)
+        self.assertEqual(parsed.crc_calculated, reference_crc32(damaged[:-4]))
+        self.assertIs(parsed.crc_valid, False)
+        self.assertEqual(parsed.parse_status, ParseStatus.INVALID)
+
+    def test_synthetic_failed_or_incomplete_capture_has_unavailable_crc(self) -> None:
+        _, record = self.captures["source_capabilities"]
+        for fixture in (
+            replace(record, decode_result=2),
+            replace(record, decode_result=3, decoded_data=record.decoded_data[:5]),
+            replace(record, decoded_data=record.decoded_data[:-4]),
+        ):
+            with self.subTest(firmware_result=fixture.decode_result, length=fixture.data_length):
+                parsed = parse_capture(fixture)
+                self.assertEqual(parsed.firmware_decode_result, fixture.decode_result)
+                self.assertEqual(parsed.raw_decoded_data, fixture.decoded_data)
+                self.assertIsNone(parsed.crc_received)
+                self.assertIsNone(parsed.crc_calculated)
+                self.assertIsNone(parsed.crc_valid)
+                self.assertEqual(parsed.parse_status, ParseStatus.PARTIAL)
 
     def test_parse_real_source_header_and_body(self) -> None:
         sample, record = self.captures["source_capabilities"]

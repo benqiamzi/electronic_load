@@ -16,6 +16,9 @@ class PDMessageResult:
     body_status: ParseStatus
     parse_status: ParseStatus
     diagnostics: tuple[ParseDiagnostic, ...]
+    crc_received: int | None = None
+    crc_calculated: int | None = None
+    crc_valid: bool | None = None
 
     @property
     def raw_decoded_data(self) -> bytes:
