@@ -1,8 +1,10 @@
+from dataclasses import replace
 from struct import iter_unpack
 
 from ...devices.drpd.capture_record import CaptureRecord, DecodeResult, FirmwareEvent
 from .crc import calculate_crc32
 from .diagnostics import ParseDiagnostic, ParseStatus
+from .extended import decode_extended_message
 from .header import PDHeader, decode_header
 from .message_types import MessageCategory, classify_message
 from .models import CaptureResult, FirmwareEventResult, PDMessageResult, PDODirection, ParseFailureResult, ResetResult
@@ -14,11 +16,6 @@ from .vdo_decoders import VDORegistry
 
 
 def _decode_body(raw: bytes, header: PDHeader) -> tuple[bytes | None, ParseStatus, ParseDiagnostic | None]:
-    if header.extended:
-        # The extended header determines the length of unchunked packets.
-        return None, ParseStatus.UNSUPPORTED, ParseDiagnostic(
-            "body", "extended_pending", "Extended message body decoding is pending."
-        )
     expected = 2 + header.num_data_objects * 4 + 4
     if len(raw) != expected:
         status = ParseStatus.PARTIAL if len(raw) < expected else ParseStatus.INVALID
@@ -56,9 +53,17 @@ def parse_capture(record: CaptureRecord | FirmwareEvent, *, vdo_registry: VDOReg
     if header is None:
         return ParseFailureResult(record, sop, ParseStatus.PARTIAL, tuple(diagnostics))
     raw = record.decoded_data
-    body, body_status, body_diagnostic = _decode_body(raw, header)
-    if body_diagnostic is not None:
-        diagnostics.append(body_diagnostic)
+    extended = None
+    if header.extended:
+        captured_body = raw[2:-4] if len(raw) >= 6 else raw[2:]
+        extended = decode_extended_message(header, captured_body, sop.kind)
+        body_status = extended.status
+        body = captured_body if len(raw) >= 8 and extended.wire_body_size == len(captured_body) else None
+        diagnostics.extend(extended.diagnostics)
+    else:
+        body, body_status, body_diagnostic = _decode_body(raw, header)
+        if body_diagnostic is not None:
+            diagnostics.append(body_diagnostic)
     message_type, type_diagnostic = classify_message(header, sop.kind)
     if type_diagnostic is not None:
         diagnostics.append(type_diagnostic)
@@ -68,6 +73,9 @@ def parse_capture(record: CaptureRecord | FirmwareEvent, *, vdo_registry: VDOReg
         if message_type.name == "Request" and len(objects) != 1:
             body_status = ParseStatus.INVALID
             diagnostics.append(ParseDiagnostic("body", "request_object_count", "Request requires exactly one RDO."))
+        if message_type.name == "EPR_Request" and len(objects) != 2:
+            body_status = ParseStatus.INVALID
+            diagnostics.append(ParseDiagnostic("body", "epr_request_object_count", "EPR_Request requires an RDO and a PDO copy."))
 
     received = calculated = valid = None
     if firmware_ok and body is not None:
@@ -97,6 +105,8 @@ def parse_capture(record: CaptureRecord | FirmwareEvent, *, vdo_registry: VDOReg
                          for index, word in enumerate(objects, 1))
         elif message_type.name == "Request":
             rdo = decode_rdo(objects[0], revision=header.spec_revision)
+        elif message_type.name == "EPR_Request":
+            rdo = replace(decode_rdo(objects[0], revision=header.spec_revision, epr=True), pdo_echo=objects[1])
         elif message_type.name == "Vendor_Defined":
             vdm = decode_vdm(objects, sop=sop.kind, revision=header.spec_revision,
                              data_role=header.data_role, cable_plug=header.cable_plug, registry=vdo_registry)
@@ -106,5 +116,5 @@ def parse_capture(record: CaptureRecord | FirmwareEvent, *, vdo_registry: VDOReg
         body=body, data_objects=objects,
         header_status=header_status, body_status=body_status, parse_status=status,
         diagnostics=tuple(diagnostics), crc_received=received,
-        crc_calculated=calculated, crc_valid=valid, pdos=pdos, rdo=rdo, vdm=vdm,
+        crc_calculated=calculated, crc_valid=valid, pdos=pdos, rdo=rdo, vdm=vdm, extended_message=extended,
     )

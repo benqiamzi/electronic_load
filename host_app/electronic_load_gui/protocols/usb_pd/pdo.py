@@ -4,6 +4,9 @@ from .diagnostics import ParseDiagnostic, ParseStatus
 from .models import PDODirection, PDOInfo, SupplyType
 
 
+SPR_PDO_COUNT = 7
+MAX_EPR_PDO_POSITION = 11
+
 _FIXED_SHARED_FLAGS = {
     29: "dual_role_power", 27: "unconstrained_power",
     26: "usb_communications_capable", 25: "dual_role_data",
@@ -126,10 +129,6 @@ def decode_pdo(
     status = ParseStatus.INVALID if problems else ParseStatus.VALID
     if supply_type == SupplyType.UNKNOWN_APDO:
         problems.append(ParseDiagnostic("pdo", "unsupported_apdo", f"APDO subtype {subtype} is reserved."))
-        if status == ParseStatus.VALID:
-            status = ParseStatus.UNSUPPORTED
-    elif supply_type in (SupplyType.SPR_AVS, SupplyType.EPR_AVS) and revision == 2:
-        problems.append(ParseDiagnostic("pdo", "avs_pending", "AVS Request association is pending."))
         if status == ParseStatus.VALID:
             status = ParseStatus.UNSUPPORTED
     return replace(pdo, status=status, diagnostics=tuple(problems))

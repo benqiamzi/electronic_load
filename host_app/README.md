@@ -186,8 +186,8 @@ Hard Reset 和 `Source_Capabilities`。本次联调的完整串口日志保存�
 
 ### PDO/RDO 语义解析
 
-- `PDMessageResult.pdos` 按报文顺序提供 Source 和 Sink 的 Fixed、Variable、Battery 与 PPS 能力对象。
-  字段使用整数 mV、mA 和 mW。SPR AVS 与 EPR AVS 可读取已定义的能力字段，完整请求关联待实现。
+- `PDMessageResult.pdos` 按报文顺序提供 Source 和 Sink 的 Fixed、Variable、Battery、PPS 及 AVS 能力字段。
+  字段使用整数 mV、mA 和 mW。SPR AVS 请求可关联普通能力通告，EPR 请求使用独立的 EPR 能力快照。
 - `PDMessageResult.rdo` 提供 Request 对象位置、通用标志和诊断。缺少前序能力时，RDO 状态为
   `context_missing`，报文自身的 `parse_status` 和 `crc_valid` 仍反映基础解析结果。
 - 每条捕获链路使用一个 `PDSessionContext`。按捕获顺序调用 `consume()`，从 `analysis.rdo`
@@ -231,8 +231,31 @@ for record in captured_records:
 ```
 
 每条捕获链路使用独立的 `VDMContext`，设备断开时调用 `disconnect()`，捕获中断时可调用 `reset()`。
-DisplayPort 等模式专用字段可通过注册表扩展。Extended Message 重组和 GUI 展示按后续里程碑交付。
+DisplayPort 等模式专用字段可通过注册表扩展。GUI 展示按后续里程碑交付。
 真实 Identity、SVIDs 和 Modes 回放结果见 [M5 验收报告](DRPD_第二阶段_M5_验收报告.md)。
+
+### Extended Message 与 EPR
+
+- `PDMessageResult.extended_message` 提供单帧 Extended Header、有效数据、填充及结构诊断。未知类型仍可回溯原始字节，CRC 状态由基础解析器独立计算。
+- `ExtendedMessageReassembler` 按 SOP、类型和发送端缓存分块。`analysis.message` 提供重组状态、已收与缺失块、有效载荷及来源。`analysis.interrupted` 保留超时、复位或传输替换时留下的部分消息。
+- 完整 EPR Source Capabilities 可传入 `PDSessionContext.consume_extended()`。后续 `EPR_Request` 依据通告的位置、回显 PDO 和电压电流范围解释。其他 Extended Message 已支持通用结构和载荷回溯，具体字段可按需求扩展。
+
+```python
+from electronic_load_gui.protocols.usb_pd import (
+    ExtendedMessageReassembler, PDSessionContext, parse_capture,
+)
+
+reassembler = ExtendedMessageReassembler()
+power_session = PDSessionContext()
+for record in captured_records:
+    frame = parse_capture(record)
+    power = power_session.consume(frame)
+    extended = reassembler.consume(frame)
+    if extended is not None:
+        power_session.consume_extended(extended)
+```
+
+每条捕获链路使用各自的重组器和会话。断开时调用两者的 `disconnect()`。离线回放结束后可用 `expire(timestamp_us)` 取出超过保留时限的部分传输。实机帧、边界和性能数据见 [M6 验收报告](DRPD_第二阶段_M6_验收报告.md)。
 
 ## 打包 Windows 程序
 

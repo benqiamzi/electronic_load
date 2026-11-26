@@ -6,7 +6,7 @@ from ...devices.drpd.capture_record import CaptureRecord, FirmwareEvent
 from .diagnostics import ParseDiagnostic, ParseStatus
 from .header import PDHeader
 from .message_types import MessageTypeInfo
-from .sop import SopInfo
+from .sop import SopInfo, SopKind
 
 
 class SupplyType(StrEnum):
@@ -71,6 +71,7 @@ class RDOInfo:
     minimum_operating_power_mw: int | None = None
     operating_voltage_mv: int | None = None
     diagnostics: tuple[ParseDiagnostic, ...] = ()
+    pdo_echo: int | None = None
 
 
 class VDMType(StrEnum):
@@ -134,6 +135,35 @@ class VDMInfo:
         return None
 
 
+class ExtendedKind(StrEnum):
+    UNCHUNKED = "unchunked"
+    CHUNK = "chunk"
+    REQUEST_CHUNK = "request_chunk"
+
+
+@dataclass(frozen=True, slots=True)
+class ExtendedHeader:
+    raw: int
+    data_size: int
+    chunked: bool
+    chunk_number: int
+    request_chunk: bool
+    reserved: int
+
+
+@dataclass(frozen=True, slots=True)
+class ExtendedMessageInfo:
+    message_type: int
+    header: ExtendedHeader | None
+    kind: ExtendedKind | None
+    chunk_payload: bytes
+    padding: bytes
+    raw_body: bytes
+    status: ParseStatus
+    wire_body_size: int | None
+    diagnostics: tuple[ParseDiagnostic, ...] = ()
+
+
 @dataclass(frozen=True, slots=True)
 class PDMessageResult:
     record: CaptureRecord
@@ -152,6 +182,7 @@ class PDMessageResult:
     pdos: tuple[PDOInfo, ...] = ()
     rdo: RDOInfo | None = None
     vdm: VDMInfo | None = None
+    extended_message: ExtendedMessageInfo | None = None
 
     @property
     def raw_decoded_data(self) -> bytes:
@@ -188,3 +219,57 @@ CaptureResult = PDMessageResult | ResetResult | FirmwareEventResult | ParseFailu
 class PDSessionAnalysis:
     result: CaptureResult
     rdo: RDOInfo | None = None
+
+
+class ExtendedDirection(StrEnum):
+    SOURCE = "source"
+    SINK = "sink"
+    PORT = "port"
+    CABLE = "cable"
+
+
+class ReassemblyStatus(StrEnum):
+    PENDING = "pending"
+    COMPLETE = "complete"
+    PARTIAL = "partial"
+    INVALID = "invalid"
+    CONTEXT_MISSING = "context_missing"
+
+
+@dataclass(frozen=True, slots=True)
+class ReassembledExtendedMessage:
+    sop: SopKind
+    message_type: int
+    direction: ExtendedDirection
+    data_size: int
+    payload: bytes
+    received_chunks: tuple[int, ...]
+    missing_chunks: tuple[int, ...]
+    status: ReassemblyStatus
+    frames: tuple[PDMessageResult, ...]
+    requests: tuple[PDMessageResult, ...] = ()
+    diagnostics: tuple[ParseDiagnostic, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class EPRSourceCapabilities:
+    raw_objects: tuple[int, ...]
+    spr_slots: tuple[PDOInfo | None, ...]
+    epr_pdos: tuple[PDOInfo, ...]
+    status: ParseStatus
+    diagnostics: tuple[ParseDiagnostic, ...] = ()
+
+    @property
+    def slots(self) -> tuple[PDOInfo | None, ...]:
+        return self.spr_slots + self.epr_pdos
+
+
+@dataclass(frozen=True, slots=True)
+class ExtendedAnalysis:
+    result: CaptureResult | None
+    status: ReassemblyStatus
+    message: ReassembledExtendedMessage | None = None
+    requested_chunk: int | None = None
+    diagnostics: tuple[ParseDiagnostic, ...] = ()
+    epr: EPRSourceCapabilities | None = None
+    interrupted: tuple[ReassembledExtendedMessage, ...] = ()

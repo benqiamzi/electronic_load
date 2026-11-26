@@ -1,0 +1,11 @@
+{
+  "provenance": "synthetic",
+  "cases": [
+    {"kind": "unchunked_empty", "pd_header": "8181", "extended_header": "0000", "data_hex": "", "padding_hex": ""},
+    {"kind": "unchunked_maximum", "pd_header": "8181", "extended_header": "0401", "data_size": 260},
+    {"kind": "chunk_zero", "pd_header": "89f1", "extended_header": "1e80", "data_size": 30, "chunk_size": 26},
+    {"kind": "request_chunk_one", "pd_header": "8990", "extended_header": "008c", "data_hex": "", "padding_hex": "0000"},
+    {"kind": "chunk_one", "pd_header": "89a3", "extended_header": "1e88", "data_hex": "1a1b1c1d", "padding_hex": "0000"},
+    {"kind": "epr_capabilities", "message_type": 17, "pdo_hex": ["0081912c", "000640c8", "e004b096", "00000000", "00000000", "00000000", "00000000", "0008c12c", "d2309678"], "epr_rdo_hex": "9048c055", "echo_pdo_hex": "d2309678"}
+  ]
+}

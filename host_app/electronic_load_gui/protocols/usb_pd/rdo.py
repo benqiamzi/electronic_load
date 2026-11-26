@@ -2,6 +2,7 @@ from dataclasses import replace
 
 from .diagnostics import ParseDiagnostic, ParseStatus
 from .models import PDODirection, PDOInfo, RDOInfo, SupplyType
+from .pdo import MAX_EPR_PDO_POSITION, SPR_PDO_COUNT
 
 
 def _check_limits(
@@ -19,8 +20,30 @@ def _check_limits(
     return problems
 
 
-def decode_rdo(raw: int, selected_pdo: PDOInfo | None = None, *, revision: int = 2) -> RDOInfo:
-    """Decode an SPR Request object using the layout of its selected Source PDO (§6.4.2)."""
+def _programmable_request(rdo: RDOInfo, pdo: PDOInfo) -> tuple[RDOInfo, list[ParseDiagnostic]]:
+    pps = pdo.supply_type == SupplyType.PPS
+    code = (rdo.raw >> 9) & 0xFFF
+    voltage = code * (20 if pps else 25)
+    current = (rdo.raw & 0x7F) * 50
+    problems = []
+    if not pps and code & 3:
+        problems.append(ParseDiagnostic("rdo", "avs_voltage_step", "AVS voltage requires a 100 mV step."))
+    if not pdo.voltage_min_mv <= voltage <= pdo.voltage_max_mv:
+        problems.append(ParseDiagnostic("rdo", "voltage_range", "Requested voltage is outside the advertised range."))
+    if pps:
+        limit = pdo.current_max_ma
+    elif pdo.supply_type == SupplyType.SPR_AVS:
+        limit = pdo.current_max_15v_ma if voltage <= 15000 else pdo.current_max_20v_ma
+    else:
+        # §6.4.2.8 and §7.1.4.3.2: PDP/V limited to 5 A, rounded down to 50 mA.
+        limit = min(5000, (pdo.pdp_mw * 1000 // voltage) // 50 * 50) if voltage else 0
+    if current > limit:
+        problems.append(ParseDiagnostic("rdo", "operating_limit", f"Operating request exceeds {limit} mA."))
+    return replace(rdo, operating_current_ma=current, operating_voltage_mv=voltage), problems
+
+
+def decode_rdo(raw: int, selected_pdo: PDOInfo | None = None, *, revision: int = 2, epr: bool = False) -> RDOInfo:
+    """Decode a Request using its selected Source PDO (§6.4.2 and §6.4.9)."""
     if not 0 <= raw <= 0xFFFFFFFF:
         raise ValueError("RDO requires an unsigned 32-bit word.")
     if revision not in (1, 2):
@@ -38,28 +61,28 @@ def decode_rdo(raw: int, selected_pdo: PDOInfo | None = None, *, revision: int =
     problems = []
     # B21 is reserved in all SPR layouts. B27 is deprecated or reserved in PD 3.x.
     reserved_mask = (1 << 21) | ((1 << 27) if revision == 2 else (3 << 22))
-    if not 1 <= position <= 7:
-        problems.append(ParseDiagnostic("rdo", "object_position", "SPR Request position must be from 1 to 7."))
+    max_position = MAX_EPR_PDO_POSITION if epr else SPR_PDO_COUNT
+    if not 1 <= position <= max_position:
+        problems.append(ParseDiagnostic("rdo", "object_position", f"Request position must be from 1 to {max_position}."))
 
     status = ParseStatus.VALID
     if selected_pdo is None:
         status = ParseStatus.CONTEXT_MISSING
     elif selected_pdo.direction != PDODirection.SOURCE or selected_pdo.index not in (None, position):
         problems.append(ParseDiagnostic("rdo", "pdo_selection", "The supplied PDO does not match the requested Source position."))
-    elif 1 <= position <= 7:
+    elif 1 <= position <= max_position:
         kind = selected_pdo.supply_type
         rdo = replace(rdo, selected_pdo=selected_pdo, request_type=kind)
         if selected_pdo.status == ParseStatus.INVALID:
             problems.append(ParseDiagnostic("rdo", "invalid_pdo", "The selected Source PDO has invalid fields."))
-        elif kind == SupplyType.PPS and revision == 2:
+        elif kind == SupplyType.EPR_AVS and (not epr or position <= SPR_PDO_COUNT):
+            problems.append(ParseDiagnostic("rdo", "epr_avs_position", "EPR AVS requires an EPR_Request at an EPR position."))
+        elif position > SPR_PDO_COUNT and kind not in (SupplyType.FIXED, SupplyType.EPR_AVS):
+            problems.append(ParseDiagnostic("rdo", "epr_pdo_type", "An EPR position requires Fixed or EPR AVS supply."))
+        elif kind in (SupplyType.PPS, SupplyType.SPR_AVS, SupplyType.EPR_AVS) and revision == 2:
             reserved_mask |= 3 << 7
-            current = (raw & 0x7F) * 50
-            voltage = ((raw >> 9) & 0xFFF) * 20
-            rdo = replace(rdo, operating_current_ma=current, operating_voltage_mv=voltage)
-            if current > selected_pdo.current_max_ma:
-                problems.append(ParseDiagnostic("rdo", "operating_limit", "PPS operating current exceeds the advertised maximum."))
-            if not selected_pdo.voltage_min_mv <= voltage <= selected_pdo.voltage_max_mv:
-                problems.append(ParseDiagnostic("rdo", "voltage_range", "Requested PPS voltage is outside the advertised range."))
+            rdo, programmable_problems = _programmable_request(rdo, selected_pdo)
+            problems.extend(programmable_problems)
         elif kind in (SupplyType.FIXED, SupplyType.VARIABLE, SupplyType.BATTERY):
             reserved_mask |= 1 << 20
             give_back = bool(raw & (1 << 27))
@@ -90,9 +113,11 @@ def decode_rdo(raw: int, selected_pdo: PDOInfo | None = None, *, revision: int =
     if problems:
         status = ParseStatus.INVALID
     elif status == ParseStatus.CONTEXT_MISSING:
-        problems.append(ParseDiagnostic("rdo", "context_missing", "No Source PDO is available for this Request."))
+        message = ("No matching EPR Source Capabilities were observed for this Request." if epr else
+                   "No Source PDO is available for this Request.")
+        problems.append(ParseDiagnostic("rdo", "context_missing", message))
     elif status == ParseStatus.UNSUPPORTED:
-        problems.append(ParseDiagnostic("rdo", "unsupported_request", "The selected PDO layout is outside SPR Request support."))
+        problems.append(ParseDiagnostic("rdo", "unsupported_request", "The selected PDO layout is outside Request decoding support."))
     elif revision == 2 and (rdo.maximum_operating_current_ma not in (None, rdo.operating_current_ma)
                             or rdo.maximum_operating_power_mw not in (None, rdo.operating_power_mw)):
         # The Header does not distinguish 3.0/3.1 from 3.2. Preserve legacy requests.

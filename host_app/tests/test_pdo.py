@@ -94,9 +94,11 @@ class PDOTests(unittest.TestCase):
         self.assertEqual(unknown.supply_type, SupplyType.UNKNOWN_APDO)
         self.assertIsNone(unknown.voltage_max_mv)
         self.assertEqual(unknown.raw, 0xF1234567)
-        for result in (source_spr, source_epr, sink_spr, sink_epr, unknown):
-            self.assertEqual(result.status, ParseStatus.UNSUPPORTED)
-            self.assertTrue(result.diagnostics)
+        for result in (source_spr, source_epr, sink_spr, sink_epr):
+            self.assertEqual(result.status, ParseStatus.VALID)
+            self.assertEqual(result.diagnostics, ())
+        self.assertEqual(unknown.status, ParseStatus.UNSUPPORTED)
+        self.assertTrue(unknown.diagnostics)
 
     def test_synthetic_invalid_range_and_first_pdo(self) -> None:
         raw = (2 << 30) | (100 << 20) | (180 << 10) | 300

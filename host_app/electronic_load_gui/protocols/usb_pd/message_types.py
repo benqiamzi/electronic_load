@@ -38,6 +38,18 @@ _DATA_NAMES = {
 }
 _CONTROL_CABLE_CAPABLE = {1, 3, 4, 13, 16, 18, 24}
 _DATA_CABLE_CAPABLE = {3, 8, 12, 15}
+EPR_SOURCE_CAPABILITIES = 17
+_EXTENDED_NAMES = {
+    1: "Source_Capabilities_Extended", 2: "Status", 3: "Get_Battery_Cap",
+    4: "Get_Battery_Status", 5: "Battery_Capabilities", 6: "Get_Manufacturer_Info",
+    7: "Manufacturer_Info", 8: "Security_Request", 9: "Security_Response",
+    10: "Firmware_Update_Request", 11: "Firmware_Update_Response", 12: "PPS_Status",
+    13: "Country_Info", 14: "Country_Codes", 15: "Sink_Capabilities_Extended",
+    16: "Extended_Control", EPR_SOURCE_CAPABILITIES: "EPR_Source_Capabilities",
+    18: "EPR_Sink_Capabilities", 30: "Vendor_Defined_Extended",
+}
+# USB PD R3.2 V1.1 Table 6.53 Start of Packet column.
+_EXTENDED_CABLE_CAPABLE = {2, 6, 7, 8, 9, 10, 11, 30}
 
 
 def classify_message(
@@ -46,7 +58,16 @@ def classify_message(
     """Classify a Header using the message category, wire revision and SOP."""
     code = header.message_type
     if header.extended:
-        return MessageTypeInfo(MessageCategory.EXTENDED, code, None, ParseStatus.UNSUPPORTED), None
+        name = _EXTENDED_NAMES.get(code)
+        category = MessageCategory.EXTENDED
+        if name is None:
+            return MessageTypeInfo(category, code, None, ParseStatus.UNKNOWN), ParseDiagnostic(
+                "message", "unknown_extended_type", f"Unknown Extended Message Type {code}.")
+        if sop != SopKind.SOP and code not in _EXTENDED_CABLE_CAPABLE:
+            return MessageTypeInfo(category, code, name, ParseStatus.INVALID), ParseDiagnostic(
+                "message", "message_context", f"{name} requires SOP.")
+        status = ParseStatus.VALID if code == EPR_SOURCE_CAPABILITIES else ParseStatus.UNSUPPORTED
+        return MessageTypeInfo(category, code, name, status), None
     if header.num_data_objects == 0:
         category = MessageCategory.CONTROL
         name = _CONTROL_NAMES.get(code)

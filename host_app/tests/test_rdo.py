@@ -104,10 +104,10 @@ class RDOTests(unittest.TestCase):
             self.assertEqual(rdo.status, ParseStatus.INVALID)
             self.assertIsNone(rdo.selected_pdo)
             self.assertEqual({d.code for d in rdo.diagnostics}, {"pdo_selection"})
-        avs = decode_pdo((0xE << 28) | (300 << 10), direction="source", index=2)
-        rdo = decode_rdo(raw, avs)
+        unknown = decode_pdo(0xF0000000, direction="source", index=2)
+        rdo = decode_rdo(raw, unknown)
         self.assertEqual(rdo.status, ParseStatus.UNSUPPORTED)
-        self.assertIs(rdo.selected_pdo, avs)
+        self.assertIs(rdo.selected_pdo, unknown)
         self.assertIsNone(rdo.operating_current_ma)
 
     def test_synthetic_stateless_request_preserves_base_parse_status(self) -> None:
