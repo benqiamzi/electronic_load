@@ -4,8 +4,8 @@ from datetime import datetime
 from math import ceil
 from pathlib import Path
 
-from PySide6.QtCore import QCoreApplication, QEvent, QObject, QSizeF, Qt, Slot
-from PySide6.QtGui import QAction, QActionEvent, QCloseEvent, QFontDatabase, QTextOption
+from PySide6.QtCore import QCoreApplication, QEvent, QObject, QSizeF, Qt, QTimer, Slot
+from PySide6.QtGui import QAction, QActionEvent, QCloseEvent, QFontDatabase, QKeySequence, QTextCursor, QTextOption
 from PySide6.QtWidgets import (
     QComboBox,
     QDoubleSpinBox,
@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QGridLayout,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QMainWindow,
     QMenu,
@@ -21,6 +22,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QSizePolicy,
     QSplitter,
+    QStackedWidget,
     QTextEdit,
     QToolBar,
     QToolButton,
@@ -33,8 +35,11 @@ from .data_logger import CsvDataLogger
 from .device import ElectronicLoadDevice
 from .dialogs import DacControlDialog, ProtectionDialog
 from .domain import DacVoltages, DeviceStatus, MeasurementSnapshot
+from .services.workspace_manager import WorkspaceManager
 from .theme import PLACEHOLDER, STYLESHEET, set_tone
 from .trend_widget import TrendWidget
+from .usb_pd_workspace import UsbPdWorkspace
+from .workspace_selector import WorkspaceSelector
 
 
 class DeviceMenu(QMenu):
@@ -77,7 +82,7 @@ class DeviceMenuText(QTextEdit):
 
 
 class MainWindow(QMainWindow):
-    def __init__(self) -> None:
+    def __init__(self, *, settings=None, drpd_device_factory=None) -> None:
         super().__init__()
         self.setWindowTitle("STM32F411 电子负载上位机")
         self.setMinimumSize(1024, 680)
@@ -93,6 +98,10 @@ class MainWindow(QMainWindow):
         self._channel_mode_initialized = False
         self._actual_channel_mode: str | None = None
         self._connection_failed = False
+        self._closing = False
+        self._close_deferred = False
+        self.workspace_manager = WorkspaceManager(self, settings)
+        self._drpd_device_factory = drpd_device_factory
         self._build_ui()
         self.setStyleSheet(STYLESHEET)
         self._connect_signals()
@@ -101,10 +110,13 @@ class MainWindow(QMainWindow):
         self._update_dac_controls()
 
     def _build_ui(self) -> None:
+        self.workspace_selector = WorkspaceSelector(self)
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, self._build_toolbar())
         root = QWidget(self)
         root.setObjectName("dashboard")
-        self.setCentralWidget(root)
+        self.workspace_stack = QStackedWidget(self)
+        self.setCentralWidget(self.workspace_stack)
+        self.workspace_stack.addWidget(root)
         main_layout = QVBoxLayout(root)
         main_layout.setContentsMargins(16, 12, 16, 16)
         main_layout.setSpacing(10)
@@ -129,11 +141,29 @@ class MainWindow(QMainWindow):
         self.main_splitter.setSizes([410, 214])
         main_layout.addWidget(self.main_splitter, 1)
 
+        self.load_status = self._label("电子负载  未连接", "caption")
+        self.pd_status = self._label("USB PD  未连接", "caption")
+        self.statusBar().setSizeGripEnabled(False)
+        self.statusBar().addPermanentWidget(self.load_status)
+        self.statusBar().addPermanentWidget(self.pd_status)
+        self.pd_workspace = UsbPdWorkspace(self.workspace_manager.settings, self._load_owns_port, self,
+                                           device_factory=self._drpd_device_factory)
+        self.workspace_stack.addWidget(self.pd_workspace)
+        self.pd_workspace.status_changed.connect(self.pd_status.setText)
+        self.pd_workspace.notice.connect(self._announce)
+        self.pd_workspace.closed.connect(self._pd_closed)
+        self.workspace_selector.selected.connect(self.workspace_manager.select)
+        self.workspace_manager.changed.connect(self._show_workspace)
+        self._show_workspace(self.workspace_manager.index)
+
     def _build_toolbar(self) -> QToolBar:
         toolbar = QToolBar("设备与采集工具", self)
         toolbar.setObjectName("mainToolbar")
         toolbar.setMovable(False)
         toolbar.setFloatable(False)
+        toolbar.addWidget(self.workspace_selector)
+        toolbar.addSeparator()
+        always_visible = tuple(toolbar.actions())
         toolbar.addWidget(self._build_device_menu_button())
 
         protection_menu = QMenu(self)
@@ -162,7 +192,7 @@ class MainWindow(QMainWindow):
 
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        toolbar.addWidget(spacer)
+        shared_spacer = toolbar.addWidget(spacer)
         self.port_combo = QComboBox()
         self.port_combo.setFixedWidth(242)
         self.port_combo.setToolTip("选择电子负载的 USB CDC 串口")
@@ -176,7 +206,68 @@ class MainWindow(QMainWindow):
         toolbar.addWidget(self.port_combo)
         toolbar.addWidget(self.refresh_button)
         toolbar.addWidget(self.connect_button)
+        self._load_toolbar_actions = tuple(action for action in toolbar.actions()
+                                           if action not in always_visible and action is not shared_spacer)
+        toolbar.addSeparator()
+        self.notice_menu = QMenu(self)
+        self.notice_menu.addAction("暂无通知").setEnabled(False)
+        toolbar.addWidget(self._menu_button("通知", self.notice_menu))
+        search = QAction("搜索", self)
+        search.setShortcut(QKeySequence.StandardKey.Find)
+        search.triggered.connect(self._search_workspace)
+        toolbar.addAction(search)
+        settings_menu = QMenu(self)
+        follow = settings_menu.addAction("自动跟随新捕获")
+        follow.setCheckable(True)
+        follow.setChecked(self.workspace_manager.settings.value("pd/auto_follow", True, type=bool))
+        follow.toggled.connect(lambda enabled: self.pd_workspace.set_auto_follow(enabled))
+        toolbar.addWidget(self._menu_button("设置", settings_menu))
         return toolbar
+
+    @Slot(int)
+    def _show_workspace(self, index: int) -> None:
+        self.workspace_selector.set_current(index)
+        self.workspace_stack.setCurrentIndex(index)
+        self.setWindowTitle("STM32F411 电子负载上位机" if index == 0 else "STM32F411 电子负载上位机 · USB PD 测试")
+        for action in self._load_toolbar_actions:
+            action.setVisible(index == 0)
+
+    def _load_owns_port(self, port: str) -> bool:
+        transport = self.device.transport
+        return transport.is_open and transport.port_name.casefold() == port.casefold()
+
+    def _refresh_load_status(self) -> None:
+        label = f"电子负载  {self.connection_label.text()}"
+        if self._input_enabled:
+            label += " · 负载 ON"
+        if self.logger.is_active:
+            label += " · CSV 记录中"
+        self.load_status.setText(label)
+
+    @Slot(str)
+    def _announce(self, message: str) -> None:
+        first = self.notice_menu.actions()[0]
+        if first.text() == "暂无通知":
+            self.notice_menu.removeAction(first)
+            first.deleteLater()
+        contents = self.notice_menu.actions()
+        action = QAction(message, self.notice_menu)
+        action.triggered.connect(lambda: self.statusBar().showMessage(message, 9000))
+        self.notice_menu.insertAction(contents[0] if contents else None, action)
+        if len(contents) >= 8:
+            self.notice_menu.removeAction(contents[-1])
+            contents[-1].deleteLater()
+        self.statusBar().showMessage(message, 9000)
+
+    def _search_workspace(self) -> None:
+        if self.workspace_manager.index == 1:
+            self.pd_workspace.focus_search()
+            return
+        keyword, accepted = QInputDialog.getText(self, "搜索通信日志", "关键字")
+        if accepted and keyword and not self.log_view.find(keyword):
+            self.log_view.moveCursor(QTextCursor.MoveOperation.Start)
+            if not self.log_view.find(keyword):
+                self.statusBar().showMessage("通信日志中没有匹配项", 4000)
 
     @staticmethod
     def _menu_button(title: str, menu: QMenu) -> QToolButton:
@@ -446,6 +537,10 @@ class MainWindow(QMainWindow):
         self._clear_connection_error()
         port_name = self.port_combo.currentData()
         if port_name:
+            pd = self.pd_workspace.device.state
+            if pd.port and pd.port.casefold() == str(port_name).casefold():
+                self._show_error(f"{port_name} 正由 USB PD 测试工作区使用")
+                return
             self.device.connect_to(str(port_name))
         else:
             self._show_error("没有可连接的串口")
@@ -493,6 +588,7 @@ class MainWindow(QMainWindow):
             set_tone(self.fault_value, "muted")
             self._stop_recording()
             self._on_input_state(False)
+        self._refresh_load_status()
 
     def _set_controls_enabled(self, enabled: bool) -> None:
         for widget in self._control_widgets:
@@ -658,6 +754,7 @@ class MainWindow(QMainWindow):
         self.input_button.setText("负载 ON" if enabled else "负载 OFF")
         set_tone(self.input_button, "success" if enabled else "muted")
         self._update_dac_controls()
+        self._refresh_load_status()
 
     @Slot(bool)
     def _toggle_recording(self, checked: bool) -> None:
@@ -679,6 +776,7 @@ class MainWindow(QMainWindow):
             return
         self.record_action.setText("停止记录曲线 CSV")
         self._append_log(f"开始记录: {path}")
+        self._refresh_load_status()
 
     def _stop_recording(self) -> None:
         if self.logger.is_active:
@@ -687,6 +785,7 @@ class MainWindow(QMainWindow):
             self._append_log(f"数据已保存: {path}")
         self.record_action.setChecked(False)
         self.record_action.setText("开始记录曲线 CSV…")
+        self._refresh_load_status()
 
     @Slot(str)
     def _show_error(self, message: str) -> None:
@@ -698,6 +797,8 @@ class MainWindow(QMainWindow):
         self.connection_error_text.show()
         set_tone(self.device_menu_button, "error")
         self._append_log(f"错误: {message}")
+        self._refresh_load_status()
+        self._announce(message)
 
     def _clear_connection_error(self) -> None:
         self.connection_error_text.clear()
@@ -712,7 +813,31 @@ class MainWindow(QMainWindow):
         timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
         self.log_view.appendPlainText(f"[{timestamp}] {text}")
 
+    def _pd_closed(self) -> None:
+        if self._close_deferred:
+            self._close_deferred = False
+            QTimer.singleShot(0, self.close)
+
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802 - Qt API
+        if not self._closing:
+            if self.isVisible() and (self.pd_workspace.busy or self.logger.is_active):
+                choice = QMessageBox.question(self, "退出上位机", "有捕获、回放或记录需要处理。可取消并先保存捕获。仍要退出？",
+                                              QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+                                              QMessageBox.StandardButton.Cancel)
+                if choice != QMessageBox.StandardButton.Yes:
+                    event.ignore()
+                    return
+            self._closing = True
+            running = self.pd_workspace.running
+            self._close_deferred = running
+            self.pd_workspace.shutdown()
+            if running:
+                self.setEnabled(False)
+                event.ignore()
+                return
+        elif self.pd_workspace.running:
+            event.ignore()
+            return
         self._stop_recording()
         self.device.disconnect_device()
         event.accept()

@@ -23,7 +23,7 @@ def set_tone(widget: QWidget, tone: str) -> None:
 
 
 STYLESHEET = f"""
-QWidget#dashboard, QDialog {{
+QWidget#dashboard, QWidget#pdWorkspace, QDialog {{
     background: #eaf0f6;
 }}
 QMainWindow, QDialog {{
@@ -240,4 +240,53 @@ QPlainTextEdit#communicationLog {{
     selection-color: #182940;
     font-size: 12px;
 }}
+QToolButton#workspaceSelector {{
+    background: #f3f7fb;
+    border: 1px solid #d4deea;
+    padding-right: 20px;
+}}
+QToolButton#workspaceSelector:hover, QToolButton#workspaceSelector:open,
+QPushButton[role="workspaceOption"][active="true"] {{
+    background: #e6eff9;
+    border-color: #adc2d9;
+}}
+QPushButton[role="workspaceOption"] {{ border-color: transparent; text-align: left; }}
+QListWidget#workspaceNavigation {{
+    background: #ffffff;
+    border: 1px solid #d4deea;
+    border-radius: 8px;
+    padding: 5px;
+    outline: 0;
+}}
+QListWidget#workspaceNavigation::item {{ padding: 7px 9px; border-radius: 5px; }}
+QListWidget#workspaceNavigation::item:hover {{ background: #f3f7fb; }}
+QListWidget#workspaceNavigation::item:selected {{ background: #dceafa; color: #225a91; }}
+QWidget#pdWorkspace QTableView, QWidget#pdWorkspace QTreeWidget, QWidget#pdWorkspace QPlainTextEdit {{
+    background: #ffffff;
+    alternate-background-color: #f6f9fc;
+    color: #182940;
+    border: 1px solid #d4deea;
+    selection-background-color: #dceafa;
+    selection-color: #182940;
+    gridline-color: #e0e8f1;
+}}
+QWidget#pdWorkspace QHeaderView::section {{
+    background: #f3f7fb;
+    color: #344e6a;
+    border: 0;
+    border-bottom: 1px solid #d4deea;
+    border-right: 1px solid #e0e8f1;
+    padding: 5px;
+}}
+QWidget#pdWorkspace QLineEdit, QWidget#pdWorkspace QProgressBar {{
+    background: #ffffff;
+    color: #182940;
+    border: 1px solid #cbd7e5;
+    border-radius: 5px;
+    padding: 4px 7px;
+}}
+QWidget#pdWorkspace QProgressBar {{ text-align: center; padding: 0; }}
+QWidget#pdWorkspace QProgressBar::chunk {{ background: #dceafa; }}
+QStatusBar {{ background: #ffffff; border-top: 1px solid #d4deea; padding: 2px 8px; }}
+QStatusBar::item {{ border: 0; }}
 """
