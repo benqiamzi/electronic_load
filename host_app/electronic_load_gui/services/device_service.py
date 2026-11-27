@@ -19,6 +19,20 @@ class DeviceService(QObject):
     snapshot_ready = Signal(object)
     capture_cleared = Signal()
     finished = Signal()
+    telemetry_changed = Signal(object)
+    telemetry_sampled = Signal(object)
+    session_sample = Signal(str, object)
+    history_error = Signal(str)
+    stream_changed = Signal(str)
+    start_stream = Signal(object)
+    stop_stream = Signal()
+    set_threshold = Signal(str, float)
+    reset_accumulator = Signal()
+    reset_protection = Signal()
+    trigger_changed = Signal(object)
+    refresh_trigger = Signal()
+    apply_trigger = Signal(object)
+    reset_trigger = Signal()
 
     _connect = Signal(str)
     disconnect_port = Signal()
@@ -31,10 +45,12 @@ class DeviceService(QObject):
     clear_capture = Signal()
     _close = Signal()
 
-    def __init__(self, parent: QObject, *, journal_path: Path | None = None, device_factory=DrpdDevice) -> None:
+    def __init__(self, parent: QObject, *, journal_path: Path | None = None, log_path: Path | None = None,
+                 device_factory=DrpdDevice) -> None:
         super().__init__(parent)
         self.state = DeviceState()
         self._path = journal_path
+        self._log_path = log_path
         self._owns_path = journal_path is None
         self._factory = device_factory
         self._thread = None
@@ -57,7 +73,7 @@ class DeviceService(QObject):
             os.close(fd)
             self._path = Path(name)
         thread = QThread(self)
-        worker = CaptureService(self._path, self._factory)
+        worker = CaptureService(self._path, self._factory, self._log_path)
         worker.moveToThread(thread)
         self._connect.connect(worker.connect_port)
         self.disconnect_port.connect(worker.disconnect_port)
@@ -69,6 +85,20 @@ class DeviceService(QObject):
         self.snapshot.connect(worker.snapshot)
         self.clear_capture.connect(worker.clear_capture)
         self._close.connect(worker.shutdown)
+        self.set_threshold.connect(worker.telemetry.set_threshold)
+        self.reset_accumulator.connect(worker.telemetry.reset_accumulator)
+        self.reset_protection.connect(worker.telemetry.reset_protection)
+        worker.telemetry.changed.connect(self.telemetry_changed)
+        worker.telemetry.sampled.connect(self.telemetry_sampled)
+        worker.session_sample.connect(self.session_sample)
+        worker.history_error.connect(self.history_error)
+        worker.stream_changed.connect(self.stream_changed)
+        self.start_stream.connect(worker.start_stream)
+        self.stop_stream.connect(worker.stop_stream)
+        self.refresh_trigger.connect(worker.trigger.refresh)
+        self.apply_trigger.connect(worker.trigger.apply)
+        self.reset_trigger.connect(worker.trigger.reset)
+        worker.trigger.changed.connect(self.trigger_changed)
         worker.changed.connect(self._update)
         worker.error.connect(self.error)
         worker.batch_ready.connect(self.batch_ready)

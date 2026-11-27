@@ -15,4 +15,4 @@
 | P4.7 仪表架 | 现有 PySide6 页面与工作区导航 | 固定布局起步，后续增加显示、尺寸调整与持久化 |
 | P4.8 验收 | 协议与 GUI 回归基线已建立 | 按自动化和实机用例逐项验收并归档原始证据 |
 
-Cable Test、固件升级与帮助系统按原计划留作后续扩展。复刻板 SYNC GPIO 与 HW Revision 的本地配置差异在外部 Sync 验收时核对。
+Cable Test、固件升级与帮助系统按原计划留作后续扩展。复刻板 SYNC GPIO 与 HW Revision 的本地配置差异在外部 Sync 验收时核对。当前软件和硬件验收状态见 [第四阶段验收报告](P4_ACCEPTANCE_REPORT.md)。

@@ -91,6 +91,8 @@ electronic-load-host
 
 界面继承电子负载上位机的 Fusion 主题。工作区和上次打开的 USB PD 页面会在下次启动时恢复，串口须手动连接。
 
+第四阶段在 USB PD 工作区增加了模拟测量、Timestrip、历史日志和 Trigger。实时捕获仍可保存原始 `.drpd` 文件，并可单独开启实时 CSV。标记与备注按会话、帧序号保存，随 CSV 或 JSON 导出。历史会话可按条件分页查询并打开到指定原始帧。 [第四阶段验收报告](docs/phase4/P4_ACCEPTANCE_REPORT.md)
+
 - [工作区界面和操作规则](docs/phase3/P3_WORKSPACE_DESIGN.md)
 - [第三阶段验收报告](docs/phase3/DRPD_第三阶段验收报告.md)
 

@@ -1,22 +1,32 @@
+import logging
+import os
 from pathlib import Path
+from tempfile import mkstemp
 
-from PySide6.QtCore import QModelIndex, QRegularExpression, QThread, QTimer, Qt, Signal, Slot
+from PySide6.QtCore import QModelIndex, QRegularExpression, QSettings, QStandardPaths, QThread, QTimer, Qt, Signal, Slot
 from PySide6.QtGui import QRegularExpressionValidator
 from PySide6.QtWidgets import (
-    QComboBox, QFileDialog, QFormLayout, QFrame, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
+    QComboBox, QFileDialog, QFormLayout, QFrame, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit,
     QListWidget, QMenu, QMessageBox, QProgressBar, QPushButton, QSplitter, QStackedWidget,
     QTableView, QToolButton, QVBoxLayout, QWidget,
 )
 
+from .history_views import HistoryPage
 from .pd_views import CaptureFilter, CaptureTableModel, CRC_TEXT, PacketDetails, STATUS_TEXT
 from .services.capture_service import DeviceState
 from .services.device_service import DeviceService
 from .services.export_service import ExportJob
+from .services.log_service import Annotation
 from .services.replay_service import ReplayService, ReplayState
+from .services.telemetry_service import TelemetryState
+from .telemetry_views import MeasurementPage
 from .theme import PLACEHOLDER, set_tone
+from .timestrip import Timestrip
+from .trigger_views import TriggerPage
 
 
-_NAV = ("设备连接", "实时捕获", "协议分析", "PDO/RDO", "VDM/VDO", "Extended/EPR", "诊断", "离线回放")
+_NAV = ("设备连接", "实时捕获", "协议分析", "PDO/RDO", "VDM/VDO", "Extended/EPR", "诊断", "离线回放",
+        "模拟测量", "Timestrip", "历史日志", "Trigger")
 _DETAIL_TABS = {2: 0, 3: 2, 4: 3, 5: 4, 6: 5}
 _REPLAY_TEXT = {"idle": "尚未打开文件", "ready": "就绪", "playing": "回放中", "paused": "已暂停",
                 "ended": "回放完成", "error": "文件错误"}
@@ -58,15 +68,27 @@ class UsbPdWorkspace(QWidget):
     _file_ack = Signal(int)
     _export_file = Signal(object)
     _close_file = Signal()
+    _history_request = Signal(object, str, object, object)
+    _seek_frame = Signal(object)
 
     def __init__(self, settings, port_reserved, parent=None, *, device_factory=None) -> None:
         super().__init__(parent)
         self.setObjectName("pdWorkspace")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
         self.settings = settings
+        if settings.format() == QSettings.Format.IniFormat:
+            history_dir = Path(settings.fileName()).absolute().parent
+        else:
+            history_dir = Path(QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppLocalDataLocation))
+        self._log_path = history_dir / "drpd-history.sqlite3"
+        self._history_files = set()
+        self._history_frame = None
+        self._replay_generation = 0
+        self._stream_path = ""
         self._port_reserved = port_reserved
         factory = {"device_factory": device_factory} if device_factory else {}
-        self.device = DeviceService(self, **factory)
+        self.device = DeviceService(self, log_path=self._log_path, **factory)
+        self._telemetry = TelemetryState()
         self.live_model = CaptureTableModel(self)
         self.replay_model = CaptureTableModel(self)
         self._dataset = "live"
@@ -85,6 +107,10 @@ class UsbPdWorkspace(QWidget):
         self._filter_timer.timeout.connect(self._apply_filter)
         self._build()
         self.device.changed.connect(self._device_changed)
+        self.device.telemetry_changed.connect(self._telemetry_changed)
+        self.device.session_sample.connect(self.timestrip.add_sample)
+        self.device.history_error.connect(self._notice)
+        self.device.stream_changed.connect(self._stream_changed)
         self.device.batch_ready.connect(self._live_batch)
         self.device.error.connect(self._notice)
         self.device.snapshot_ready.connect(self._snapshot_ready)
@@ -113,6 +139,13 @@ class UsbPdWorkspace(QWidget):
         self.pages = QStackedWidget()
         self.pages.addWidget(self._build_device_page())
         self.pages.addWidget(self._build_analyzer())
+        self.measurements = MeasurementPage(self.device, self.settings)
+        self.pages.addWidget(self.measurements)
+        self.history = HistoryPage(lambda: self.device.state.capture != "idle", self._history_replay_path)
+        self.history.request.connect(self._request_history)
+        self.pages.addWidget(self.history)
+        self.trigger = TriggerPage(self.device)
+        self.pages.addWidget(self.trigger)
         outer.addWidget(self.pages, 1)
         self.navigation.currentRowChanged.connect(self._navigate)
 
@@ -141,6 +174,8 @@ class UsbPdWorkspace(QWidget):
         form.setHorizontalSpacing(20)
         self.device_labels = {}
         for key, title in (("connection", "连接状态"), ("identity", "设备标识"), ("firmware", "固件版本"),
+                           ("role", "CC 角色"), ("attach", "Attach 状态"),
+                           ("queue", "设备捕获队列"), ("sink_error", "Sink 错误码"),
                            ("sink_state", "DUT 协商状态"), ("device_capture", "设备捕获开关"), ("cycle", "捕获周期"),
                            ("epr_config", "固件 EPR 配置"), ("firmware_epr_count", "固件 EPR PDO 数"),
                            ("last", "最近通信"), ("error", "最近错误")):
@@ -168,7 +203,8 @@ class UsbPdWorkspace(QWidget):
         self.query = _button("读取源能力", self.device.query_source.emit)
         self.clear_display = _button("清空显示", self._hide_rows)
         self.clear_raw = _button("清空本次捕获", self._clear_capture)
-        for button in (self.go, self.halt, self.query, self.clear_display, self.clear_raw):
+        self.stream_button = _button("实时 CSV…", self._toggle_stream)
+        for button in (self.go, self.halt, self.query, self.clear_display, self.clear_raw, self.stream_button):
             row.addWidget(button)
         row.addStretch()
         row.addWidget(self._export_menu("live"))
@@ -219,18 +255,26 @@ class UsbPdWorkspace(QWidget):
         self.table.selectionModel().currentChanged.connect(self._current_changed)
         self.details = PacketDetails()
         split = QSplitter(Qt.Orientation.Vertical)
+        self.analyzer_split = split
+        self.timestrip = Timestrip()
+        self.timestrip.selected.connect(self._select_timeline_frame)
+        self.timestrip.range_selected.connect(self._filter_timeline_range)
+        self.timestrip.samples_requested.connect(self._timeline_samples)
         split.setChildrenCollapsible(False)
         split.addWidget(self.table)
         split.addWidget(self.details)
+        split.addWidget(self.timestrip)
         split.setSizes([340, 260])
         split.setStretchFactor(0, 3)
         split.setStretchFactor(1, 2)
+        split.splitterMoved.connect(self._save_analyzer_layout)
         layout.addWidget(split, 1)
         self.replay_controls.hide()
+        self.timestrip.hide()
         return panel
 
     def _build_filters(self) -> QVBoxLayout:
-        first, second = QHBoxLayout(), QHBoxLayout()
+        first, second, third = QHBoxLayout(), QHBoxLayout(), QHBoxLayout()
         self.sop_filter = _combo([("全部 SOP", ""), *( (name, name) for name in ("SOP", "SOP'", "SOP''", "Hard Reset", "Cable Reset") )], "SOP 过滤")
         self.type_filter = QLineEdit(placeholderText="消息类型")
         self.type_filter.setAccessibleName("消息类型过滤")
@@ -238,6 +282,13 @@ class UsbPdWorkspace(QWidget):
         self.state_filter = _combo([("全部状态", ""), *((v, k) for k, v in STATUS_TEXT.items())], "解析状态过滤")
         self.scope_filter = _combo([("全部协议", ""), ("PDO/RDO", "power"), ("VDM/VDO", "vdm"), ("Extended", "extended")], "协议分类过滤")
         self.level_filter = _combo([("全部诊断级别", ""), ("错误", "error"), ("提示", "warning")], "诊断级别过滤")
+        roles = [(name, name) for name in ("Source", "Sink", "Cable", "Port")]
+        self.sender_filter = _combo([("全部发送端", ""), *roles], "发送端过滤")
+        self.receiver_filter = _combo([("全部接收端", ""), *roles], "接收端过滤")
+        events = [(name, name) for name in ("Attach", "Detach", "Hard Reset", "Cable Reset", "Protocol Error",
+                                            "Sync Trigger", "OVP", "OCP", "Sink Error", "Sink Warning", "Firmware Event")]
+        self.event_filter = _combo([("全部事件", ""), *events], "事件过滤")
+        self.flag_filter = _combo([("全部标注", False), ("仅已标记", True)], "标记过滤")
         self.keyword = QLineEdit(placeholderText="搜索消息、SVID、原始字或诊断代码")
         self.keyword.setAccessibleName("搜索 PD 报文")
         self.keyword.returnPressed.connect(self._find_first)
@@ -248,20 +299,42 @@ class UsbPdWorkspace(QWidget):
             field.setValidator(QRegularExpressionValidator(QRegularExpression(r"\d{0,20}"), field))
             field.setMaximumWidth(134)
         self._filter_widgets = (self.sop_filter, self.type_filter, self.crc_filter, self.state_filter,
-                                self.scope_filter, self.level_filter, self.keyword, self.time_from, self.time_to)
+                                self.scope_filter, self.level_filter, self.keyword, self.time_from, self.time_to,
+                                self.sender_filter, self.receiver_filter, self.event_filter, self.flag_filter)
         for widget in self._filter_widgets[:6]:
             first.addWidget(widget, 1 if widget is self.type_filter else 0)
-        for widget in self._filter_widgets[6:]:
+        for widget in self._filter_widgets[6:9]:
             second.addWidget(widget, 1 if widget is self.keyword else 0)
+        for widget in self._filter_widgets[9:]:
+            third.addWidget(widget)
         for widget in self._filter_widgets:
             signal = widget.textChanged if isinstance(widget, QLineEdit) else widget.currentIndexChanged
             signal.connect(lambda *_: self._filter_timer.start())
         second.addWidget(_button("定位", self._find_first))
         second.addWidget(_button("清除过滤", self._clear_filters))
+        third.addStretch()
+        self.flag_button = _button("标记", self._flag_record)
+        self.note_button = _button("备注…", self._note_record)
+        self.flag_button.setEnabled(False)
+        self.note_button.setEnabled(False)
+        third.addWidget(self.flag_button)
+        third.addWidget(self.note_button)
+        self.layout_button = QToolButton()
+        self.layout_button.setText("布局")
+        self.layout_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        menu = QMenu(self.layout_button)
+        self._detail_action = menu.addAction("显示报文详情")
+        self._detail_action.setCheckable(True)
+        self._detail_action.setChecked(self.settings.value("pd/layout-v1/details", True, type=bool))
+        self._detail_action.toggled.connect(self._show_details)
+        menu.addAction("恢复默认", self._reset_analyzer_layout)
+        self.layout_button.setMenu(menu)
+        third.addWidget(self.layout_button)
         filters = QVBoxLayout()
         filters.setSpacing(5)
         filters.addLayout(first)
         filters.addLayout(second)
+        filters.addLayout(third)
         return filters
 
     def _export_menu(self, dataset: str) -> QToolButton:
@@ -284,9 +357,18 @@ class UsbPdWorkspace(QWidget):
         if row < 0:
             return
         self.settings.setValue("pd/page", row)
-        self.pages.setCurrentIndex(int(row != 0))
-        if row == 0:
+        self.pages.setCurrentIndex({8: 2, 10: 3, 11: 4}.get(row, int(row != 0)))
+        if row == 10:
+            self.history.refresh()
+        if row == 11:
+            self.device.refresh_trigger.emit()
+        if row in (0, 8, 10, 11):
             return
+        self.timestrip.setVisible(row == 9)
+        self.details.setVisible(self._detail_action.isChecked())
+        self._restore_analyzer_layout()
+        if row == 9:
+            self._refresh_timeline()
         if row == 1:
             self._show_dataset("live")
         elif row == 7:
@@ -294,6 +376,30 @@ class UsbPdWorkspace(QWidget):
         if row in _DETAIL_TABS:
             self.details.setCurrentIndex(_DETAIL_TABS[row])
         self._apply_filter()
+
+    def _layout_key(self):
+        return "pd/layout-v1/" + ("timestrip-split" if self.navigation.currentRow() == 9 else "message-split")
+
+    def _save_analyzer_layout(self, *_):
+        self.settings.setValue(self._layout_key(), self.analyzer_split.sizes())
+
+    def _restore_analyzer_layout(self):
+        default = [190, 130, 280] if self.navigation.currentRow() == 9 else [340, 260, 0]
+        saved = self.settings.value(self._layout_key(), default, type=list)
+        if len(saved) == 3 and all(str(value).isdigit() for value in saved):
+            self.analyzer_split.setSizes([int(value) for value in saved])
+        else:
+            self.analyzer_split.setSizes(default)
+
+    def _show_details(self, visible):
+        self.settings.setValue("pd/layout-v1/details", visible)
+        self.details.setVisible(visible)
+
+    def _reset_analyzer_layout(self):
+        for key in ("timestrip-split", "message-split", "details"):
+            self.settings.remove("pd/layout-v1/" + key)
+        self._detail_action.setChecked(True)
+        self._restore_analyzer_layout()
 
     def _show_dataset(self, dataset: str) -> None:
         if self._dataset != dataset:
@@ -322,6 +428,15 @@ class UsbPdWorkspace(QWidget):
         if event is not None:
             self._selected[self._dataset] = event.index
         self.details.set_event(event)
+        self._update_annotation_buttons(event)
+        self._refresh_timeline()
+
+    def _update_annotation_buttons(self, event):
+        annotatable = event is not None and len(event.session_id) == 32
+        self.flag_button.setEnabled(annotatable)
+        self.note_button.setEnabled(annotatable)
+        if annotatable:
+            self.flag_button.setText("取消标记" if self.filter.sourceModel().annotation(event).flagged else "标记")
 
     def _apply_filter(self) -> None:
         page = self.navigation.currentRow()
@@ -330,6 +445,8 @@ class UsbPdWorkspace(QWidget):
                               scope=self.scope_filter.currentData(), level=self.level_filter.currentData(),
                               start=int(self.time_from.text()) if self.time_from.text() else None,
                               end=int(self.time_to.text()) if self.time_to.text() else None,
+                              sender=self.sender_filter.currentData(), receiver=self.receiver_filter.currentData(),
+                              event_type=self.event_filter.currentData(), flagged=self.flag_filter.currentData(),
                               keyword=self.keyword.text().strip().casefold(), diagnostics_only=page == 6)
         self._update_summary()
 
@@ -384,6 +501,11 @@ class UsbPdWorkspace(QWidget):
             self.device.connect_port(port)
 
     @Slot(object)
+    def _telemetry_changed(self, state: TelemetryState) -> None:
+        self._telemetry = state
+        self._device_changed(self.device.state)
+
+    @Slot(object)
     def _device_changed(self, state: DeviceState) -> None:
         connected = state.connection == "connected"
         busy = state.connection in ("connecting", "disconnecting")
@@ -394,6 +516,7 @@ class UsbPdWorkspace(QWidget):
         self.port_combo.setEnabled(not connected and not busy)
         self.status_button.setEnabled(connected)
         self.go.setEnabled(connected and not active)
+        self.stream_button.setEnabled(connected)
         self.halt.setEnabled(state.capture in ("running", "starting"))
         self.query.setEnabled(state.capture == "running")
         self.clear_raw.setEnabled(not active and not self._exporting and state.count > 0)
@@ -401,6 +524,9 @@ class UsbPdWorkspace(QWidget):
         self.clear_display.setEnabled(self.live_model.rowCount() > 0)
         values = {"connection": f"{_CONNECTION_TEXT[state.connection]} {state.port}".strip(),
                   "identity": state.identity, "firmware": state.firmware, "sink_state": state.sink_state,
+                  "role": self._telemetry.role.role if connected and self._telemetry.role else None,
+                  "attach": self._telemetry.role.attach if connected and self._telemetry.role else None,
+                  "sink_error": self._telemetry.sink_error if connected else None, "queue": state.queue,
                   "device_capture": ("ON" if state.device_capture else "OFF") if state.device_capture is not None else "",
                   "cycle": f"{state.cycle_ns:g} ns" if state.cycle_ns is not None else "", "epr_config": state.epr_config,
                   "firmware_epr_count": state.firmware_epr_count, "last": state.last_communication, "error": state.error}
@@ -468,10 +594,22 @@ class UsbPdWorkspace(QWidget):
 
     def _append(self, model, batch, dataset: str) -> None:
         model.append(batch)
+        if dataset == "replay":
+            ranges = {}
+            for event in batch:
+                if len(event.session_id) == 32:
+                    begin, _ = ranges.get(event.session_id, (event.session_index, event.session_index))
+                    ranges[event.session_id] = (begin, event.session_index)
+            for session, (begin, end) in ranges.items():
+                self._request_history("annotations", (self._replay_generation, session), (session, begin, end))
         if self._dataset == dataset:
             if self._follow and not self.table.currentIndex().isValid():
                 self.table.scrollToBottom()
             self._update_summary()
+            if dataset == "replay" and self._history_frame is not None:
+                frame, self._history_frame = self._history_frame, None
+                self._select_timeline_frame(frame)
+            self._refresh_timeline()
 
     def _hide_rows(self) -> None:
         self.live_model.clear(display_only=True)
@@ -490,6 +628,7 @@ class UsbPdWorkspace(QWidget):
     @Slot()
     def _live_cleared(self) -> None:
         self.live_model.clear()
+        self.timestrip.clear_live()
         self._saved_live_count = 0
         self._selected["live"] = None
         self.clear_display.setEnabled(False)
@@ -507,12 +646,15 @@ class UsbPdWorkspace(QWidget):
         self._replay_control.connect(worker.control)
         self._file_ack.connect(worker.acknowledge)
         self._export_file.connect(worker.export)
+        self._history_request.connect(worker.history)
+        self._seek_frame.connect(worker.seek_frame)
         self._close_file.connect(worker.shutdown)
         worker.opened.connect(self._file_opened)
         worker.changed.connect(self._replay_changed)
         worker.batch_ready.connect(self._replay_batch)
         worker.error.connect(self._notice)
         worker.exported.connect(self._exported)
+        worker.history_result.connect(self._history_result)
         worker.finished.connect(thread.quit, Qt.ConnectionType.DirectConnection)
         thread.finished.connect(worker.deleteLater)
         thread.finished.connect(self._maybe_closed)
@@ -525,20 +667,120 @@ class UsbPdWorkspace(QWidget):
         if path:
             self.open_capture(Path(path))
 
-    def open_capture(self, path: Path) -> None:
+    def open_capture(self, path: Path, *, frame: int | None = None) -> None:
         if self._closing:
             return
         self._ensure_file_worker()
-        self.settings.setValue("pd/open_dir", str(path.parent))
+        self._history_frame = frame
+        if frame is None:
+            self.settings.setValue("pd/open_dir", str(path.parent))
         self.navigation.setCurrentRow(7)
         self._load_file.emit(path)
+        if frame is not None:
+            self.navigation.setCurrentRow(9)
+            self._seek_frame.emit(frame)
 
     @Slot(object)
     def _file_opened(self, path: Path) -> None:
         self.replay_model.clear()
+        self._replay_generation += 1
         self._selected["replay"] = None
         if self._dataset == "replay":
             self.details.set_event(None)
+        self._refresh_timeline()
+
+    def _refresh_timeline(self):
+        if self.navigation.currentRow() == 9:
+            self.timestrip.update_records(self.filter.sourceModel().rows, self._dataset, self._current_event())
+
+    def _current_event(self):
+        return self.table.currentIndex().data(CaptureTableModel.EventRole)
+
+    def _select_timeline_frame(self, frame):
+        model = self.filter.sourceModel()
+        for row, event in enumerate(model.rows):
+            if event.index == frame:
+                target = self.filter.mapFromSource(model.index(row, 0))
+                if not target.isValid():
+                    self._clear_filters()
+                    target = self.filter.mapFromSource(model.index(row, 0))
+                if target.isValid():
+                    self.table.setCurrentIndex(target)
+                    self.table.scrollTo(target)
+                break
+
+    def _filter_timeline_range(self, start, end):
+        self.time_from.setText(str(start))
+        self.time_to.setText(str(end))
+        self._apply_filter()
+
+    def _timeline_samples(self, session, start, end):
+        self._request_history("samples", (session, (start, end)), (session, start, end))
+
+    def _request_history(self, action, token, params):
+        if not self._closing:
+            self._ensure_file_worker()
+            self._history_request.emit(self._log_path, action, token, params)
+
+    def _history_replay_path(self, session):
+        fd, name = mkstemp(prefix=f"drpd-{session[:8]}-", suffix=".drpd", dir=self._log_path.parent)
+        os.close(fd)
+        path = Path(name)
+        self._history_files.add(path)
+        return path
+
+    def _history_result(self, action, token, result, error):
+        self.history.result(action, token, result, error)
+        if error:
+            if action not in ("sessions", "query", "remove", "replay"):
+                self._notice(error)
+            return
+        if action == "samples":
+            session, key = token
+            self.timestrip.set_archived_samples(session, key, result)
+        elif action == "replay":
+            self.open_capture(result, frame=token)
+        elif action == "annotations" and token[0] == self._replay_generation:
+            self.replay_model.update_annotations(token[1], result)
+            if self._dataset == "replay":
+                self._apply_filter()
+                self._update_annotation_buttons(self._current_event())
+        elif action == "annotate":
+            session, frame = token
+            for model in (self.live_model, self.replay_model):
+                if any(row.session_id == session and row.session_index == frame for row in model.rows):
+                    model.update_annotations(session, {frame: result})
+            self._apply_filter()
+            self._update_annotation_buttons(self._current_event())
+
+    def _flag_record(self):
+        if (event := self._current_event()) is not None:
+            existing = self.filter.sourceModel().annotation(event)
+            self._annotate(event, Annotation(not existing.flagged, existing.note))
+
+    def _note_record(self):
+        if (event := self._current_event()) is not None:
+            existing = self.filter.sourceModel().annotation(event)
+            note, accepted = QInputDialog.getMultiLineText(self, "报文备注", "备注", existing.note)
+            if accepted:
+                self._annotate(event, Annotation(existing.flagged, note.strip()))
+
+    def _annotate(self, event, annotation):
+        if len(event.session_id) == 32:
+            key = (event.session_id, event.session_index)
+            self._request_history("annotate", key, (*key, annotation))
+
+    def _toggle_stream(self):
+        if self._stream_path:
+            self.device.stop_stream.emit()
+        else:
+            path, _ = QFileDialog.getSaveFileName(self, "创建实时 CSV", "capture-live.csv", "CSV (*.csv)")
+            if path:
+                self.device.start_stream.emit(Path(path))
+
+    def _stream_changed(self, path):
+        self._stream_path = path
+        self.stream_button.setText("停止实时 CSV" if path else "实时 CSV…")
 
     @Slot(object)
     def _replay_changed(self, state: ReplayState) -> None:
@@ -577,7 +819,7 @@ class UsbPdWorkspace(QWidget):
             self._waiting_export = (kind, target)
             self.device.snapshot.emit()
         else:
-            self._export_file.emit(ExportJob(self._replay.path, target, kind))
+            self._export_file.emit(ExportJob(self._replay.path, target, kind, log_path=self._log_path))
 
     @Slot(object)
     def _snapshot_ready(self, snapshot) -> None:
@@ -588,7 +830,7 @@ class UsbPdWorkspace(QWidget):
         if snapshot is None or not snapshot.count:
             self._exported(target, 0, "没有可保存的已落盘捕获")
         else:
-            self._export_file.emit(ExportJob(snapshot.path, target, kind, snapshot))
+            self._export_file.emit(ExportJob(snapshot.path, target, kind, snapshot, self._log_path))
 
     @Slot(object, int, str)
     def _exported(self, target, count, error) -> None:
@@ -624,4 +866,9 @@ class UsbPdWorkspace(QWidget):
         if self._closing and not self._closed and not self.running:
             self._closed = True
             self.device.cleanup()
+            for path in self._history_files:
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError:
+                    logging.getLogger(__name__).warning("Could not remove history replay file %s", path, exc_info=True)
             self.closed.emit()

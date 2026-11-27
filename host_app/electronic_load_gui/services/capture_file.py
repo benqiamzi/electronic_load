@@ -25,6 +25,9 @@ PROVENANCE = ("real", "synthetic", "unlabelled")
 class CaptureEntry:
     record: CaptureRecord | FirmwareEvent | None
     provenance: str = "unlabelled"
+    session_id: str = ""
+    session_index: int = 0
+    boundary_metadata: dict | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,8 +58,8 @@ class CaptureJournal:
             self._file.close()
             raise
 
-    def boundary(self) -> None:
-        self._file.write(_json_line({"boundary": True}))
+    def boundary(self, **metadata) -> None:
+        self._file.write(_json_line({**metadata, "boundary": True}))
 
     def append(self, record: CaptureRecord | FirmwareEvent, provenance: str) -> None:
         self._file.write(_json_line({"payload_hex": record.raw_payload.hex(), "provenance": provenance,
@@ -142,19 +145,27 @@ class CaptureReader:
 
     def _native_entries(self) -> Iterator[CaptureEntry]:
         default_cycle = _cycle(self.metadata.get("capture_cycle_ns", 10.0))
+        session_id = self.metadata.get("session_id", "")
+        session_index = 0
         while line := self._line():
             item = json.loads(line)
             if not isinstance(item, dict):
                 raise ValueError("捕获文件记录必须为对象")
             if item.get("boundary") is True:
-                yield CaptureEntry(None)
+                session_id = item.get("session_id", "")
+                session_index = 0
+                yield CaptureEntry(None, session_id=session_id if isinstance(session_id, str) else "",
+                                   boundary_metadata=item)
                 continue
             payload = item.get("payload_hex")
             if not isinstance(payload, str):
                 raise ValueError("捕获文件缺少原始载荷")
             cycle = item.get("cycle_time_ns")
-            yield _record(bytes.fromhex(payload), default_cycle if cycle is None else _cycle(cycle),
-                          item.get("provenance", "unlabelled"))
+            entry = _record(bytes.fromhex(payload), default_cycle if cycle is None else _cycle(cycle),
+                            item.get("provenance", "unlabelled"))
+            session_index += 1
+            yield CaptureEntry(entry.record, entry.provenance, session_id if isinstance(session_id, str) else "",
+                               session_index)
 
     def _import_entries(self, indexed: bool) -> Iterator[CaptureEntry]:
         if not indexed:

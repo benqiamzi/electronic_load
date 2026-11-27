@@ -9,6 +9,7 @@ from PySide6.QtWidgets import QHeaderView, QPlainTextEdit, QTabWidget, QTreeWidg
 
 from .devices.drpd.capture_record import CaptureRecord
 from .services.analysis_service import AnalysisEvent, event_state
+from .services.log_service import Annotation
 from .theme import PLACEHOLDER
 
 
@@ -47,7 +48,7 @@ def summary(event: AnalysisEvent) -> str:
 
 
 class CaptureTableModel(QAbstractTableModel):
-    HEADERS = ("帧", "时间 µs", "SOP", "发送端", "版本", "消息类型", "ID", "CRC", "状态", "来源", "摘要")
+    HEADERS = ("帧", "时间 µs", "SOP", "发送端", "版本", "消息类型", "ID", "CRC", "状态", "来源", "摘要", "接收端", "备注")
     EventRole = Qt.ItemDataRole.UserRole + 1
     SortRole = Qt.ItemDataRole.UserRole + 2
 
@@ -59,6 +60,7 @@ class CaptureTableModel(QAbstractTableModel):
         self.row_limit = row_limit
         self.byte_limit = byte_limit
         self.hidden = 0
+        self.annotations = {}
 
     def rowCount(self, parent=QModelIndex()) -> int:
         return 0 if parent.isValid() else len(self.rows)
@@ -84,20 +86,31 @@ class CaptureTableModel(QAbstractTableModel):
             else:
                 color = "#a32937" if state == "invalid" else "#8e4b14" if event.diagnostics else None
             return QBrush(QColor(color)) if color else None
+        annotation = self.annotation(event)
+        if role == Qt.ItemDataRole.ToolTipRole and annotation.note:
+            return annotation.note
         if role not in (Qt.ItemDataRole.DisplayRole, self.SortRole):
             return None
         header = event.message.header if event.message else None
-        sender = PLACEHOLDER
-        if header:
-            if header.power_role is not None:
-                sender = "Source" if header.power_role else "Sink"
-            elif header.cable_plug is not None:
-                sender = "Cable" if header.cable_plug else "Port"
-        columns = (event.index, event.timestamp_us, event.sop or PLACEHOLDER, sender,
+        columns = (event.index, event.timestamp_us, event.sop or PLACEHOLDER, event.sender or PLACEHOLDER,
                    ("1.0", "2.0", "3.x", "保留")[header.spec_revision] if header else PLACEHOLDER,
                    event.message_name, header.message_id if header else PLACEHOLDER, CRC_TEXT[event.crc],
-                   STATUS_TEXT[state], SOURCE_TEXT[event.provenance], summary(event))
+                   STATUS_TEXT[state], SOURCE_TEXT[event.provenance], summary(event), event.receiver or PLACEHOLDER,
+                   ("★ " if annotation.flagged else "") + annotation.note)
         return columns[index.column()]
+
+    def annotation(self, event):
+        return self.annotations.get((event.session_id, event.session_index), Annotation())
+
+    def update_annotations(self, session, values):
+        for index, annotation in values.items():
+            key = (session, index)
+            if annotation.flagged or annotation.note:
+                self.annotations[key] = annotation
+            else:
+                self.annotations.pop(key, None)
+        if self.rows:
+            self.dataChanged.emit(self.index(0, 12), self.index(len(self.rows) - 1, 12))
 
     @staticmethod
     def _cost(event: AnalysisEvent) -> int:
@@ -130,6 +143,8 @@ class CaptureTableModel(QAbstractTableModel):
             evict += 1
         if evict:
             self.beginRemoveRows(QModelIndex(), 0, evict - 1)
+            for event in self.rows[:evict]:
+                self.annotations.pop((event.session_id, event.session_index), None)
             del self.rows[:evict]
             del self._sizes[:evict]
             self.endRemoveRows()
@@ -146,6 +161,7 @@ class CaptureTableModel(QAbstractTableModel):
         self.beginResetModel()
         self.hidden = self.hidden + len(self.rows) if display_only else 0
         self.rows.clear()
+        self.annotations.clear()
         self._sizes.clear()
         self._bytes = 0
         self.endResetModel()
@@ -178,6 +194,12 @@ class CaptureFilter(QSortFilterProxyModel):
             return False
         if c.get("state") and event_state(event) != c["state"]:
             return False
+        for field in ("sender", "receiver", "event_type"):
+            if c.get(field) and getattr(event, field) != c[field]:
+                return False
+        annotation = self.sourceModel().annotation(event)
+        if c.get("flagged") and not annotation.flagged:
+            return False
         if c.get("start") is not None and event.timestamp_us < c["start"]:
             return False
         if c.get("end") is not None and event.timestamp_us > c["end"]:
@@ -198,7 +220,7 @@ class CaptureFilter(QSortFilterProxyModel):
         needle = c.get("keyword")
         if not needle:
             return True
-        items = [event.message_name, summary(event), *(issue.code for issue in event.diagnostics)]
+        items = [event.message_name, event.event_type, summary(event), annotation.note, *(issue.code for issue in event.diagnostics)]
         if message:
             items.extend(f"0x{word:08X}" for word in message.data_objects)
         if message and message.vdm:

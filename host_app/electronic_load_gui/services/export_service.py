@@ -1,4 +1,5 @@
 import csv
+from contextlib import nullcontext
 from dataclasses import dataclass
 import io
 import json
@@ -7,6 +8,7 @@ from pathlib import Path
 from .. import __version__
 from .analysis_service import AnalysisService, event_state
 from .capture_file import FORMAT, VERSION, CaptureReader, CaptureSnapshot, atomic_output, json_value
+from .log_service import Annotation, LogService
 
 
 @dataclass(frozen=True, slots=True)
@@ -15,6 +17,7 @@ class ExportJob:
     destination: Path
     kind: str
     snapshot: CaptureSnapshot | None = None
+    log_path: Path | None = None
 
 
 class ExportService:
@@ -34,7 +37,10 @@ class ExportService:
             return job.snapshot.count
 
         limit = job.snapshot.size if job.snapshot is not None else None
-        with CaptureReader(job.source, limit=limit) as reader, atomic_output(job.destination) as output:
+        log = LogService(job.log_path) if job.kind in ("csv", "json") and job.log_path and job.log_path.is_file() else nullcontext()
+        with log as history, CaptureReader(job.source, limit=limit) as reader, atomic_output(job.destination) as output:
+            if history is not None:
+                history.db.execute("BEGIN")
             entries = iter(reader)
             first = next(entries, None)
             index = 0
@@ -50,7 +56,8 @@ class ExportService:
                 output.write(b',"records":[\n')
             elif job.kind == "csv":
                 output.write(b"\xef\xbb\xbf")
-                self._csv_row(output, ("帧", "时间 µs", "来源", "SOP", "消息类型", "CRC", "状态", "诊断", "原始字节"))
+                self._csv_row(output, ("帧", "时间 µs", "来源", "SOP", "消息类型", "CRC", "状态", "诊断", "原始字节",
+                                       "会话", "会话帧", "发送端", "接收端", "事件", "标记", "备注"))
             elif job.kind == "diagnostics":
                 output.write("# USB PD 捕获诊断\n\n帧号引用原始捕获顺序。\n\n".encode("utf-8"))
             else:
@@ -64,23 +71,28 @@ class ExportService:
                 if record is None:
                     analysis.reset()
                     if job.kind == "raw":
-                        self._line(output, {"boundary": True})
+                        self._line(output, entry.boundary_metadata or {"boundary": True})
                 else:
                     index += 1
                     if job.kind == "raw":
                         self._line(output, {"payload_hex": record.raw_payload.hex(), "provenance": entry.provenance,
                                             "cycle_time_ns": getattr(record, "cycle_time_ns", None)})
                     else:
-                        event = analysis.consume(index, record, entry.provenance)
+                        event = analysis.consume(index, record, entry.provenance, entry.session_id, entry.session_index)
+                        annotation = (history.annotation(entry.session_id, entry.session_index)
+                                      if history is not None and entry.session_id else Annotation())
                         if job.kind == "json":
                             if index > 1:
                                 output.write(b",\n")
-                            output.write(json.dumps(json_value(event), ensure_ascii=False).encode("utf-8"))
+                            output.write(json.dumps({**json_value(event), "annotation": json_value(annotation)},
+                                                    ensure_ascii=False).encode("utf-8"))
                         elif job.kind == "csv":
                             raw = getattr(record, "decoded_data", getattr(record, "event_text_bytes", b""))
                             self._csv_row(output, (index, event.timestamp_us, event.provenance, event.sop,
                                                    event.message_name, event.crc, event_state(event),
-                                                   ", ".join(issue.code for issue in event.diagnostics), raw.hex(" ")))
+                                                   ", ".join(issue.code for issue in event.diagnostics), raw.hex(" "),
+                                                   entry.session_id, entry.session_index or "", event.sender, event.receiver,
+                                                   event.event_type, int(annotation.flagged), annotation.note))
                         elif event.diagnostics:
                             diagnostic_count += len(event.diagnostics)
                             output.write(f"## 帧 {index} · {event.timestamp_us} µs · {event.message_name}\n\n".encode("utf-8"))

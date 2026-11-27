@@ -7,12 +7,47 @@ import unittest
 from electronic_load_gui.services.analysis_service import AnalysisService, event_state
 from electronic_load_gui.services.capture_file import CaptureJournal, CaptureReader
 from electronic_load_gui.services.export_service import ExportJob, ExportService
+from electronic_load_gui.services.log_service import Annotation, LogService
 
 from protocol_m7_fixtures import parse_wire, synthetic_mixed_wire
 from test_usb_pd import FIXTURES
 
 
 class PdServiceTests(unittest.TestCase):
+    def test_history_pages_annotations_and_exports_preserve_session_payloads(self):
+        _, wire, _ = synthetic_mixed_wire()
+        raw_records = tuple(parse_wire(wire))[:3]
+        session = "a" * 32
+        analysis = AnalysisService()
+        events = tuple(analysis.consume(i, record, "real", session, i)
+                       for i, record in enumerate(raw_records, 1))
+        with TemporaryDirectory(dir=Path.cwd()) as directory:
+            root = Path(directory)
+            path = root / "history.db"
+            with LogService(path) as db:
+                db.start(session, {"capture_cycle_ns": 10.0})
+                db.add(events)
+                db.annotate(session, 2, Annotation(True, "核对原始字节"))
+            with LogService(path) as db:
+                self.assertEqual([row["frame"] for row in db.query(session, after=1, limit=1)], [2])
+                self.assertEqual([row["frame"] for row in db.query(session, flagged=True, text="核对")], [2])
+                self.assertEqual(db.query(session, start=2**64 - 1), [])
+                self.assertEqual(db.annotation(session, 2), Annotation(True, "核对原始字节"))
+                db.export_raw(session, root / "capture.drpd")
+            with CaptureReader(root / "capture.drpd") as reader:
+                restored = tuple(reader)
+            self.assertEqual([item.record.raw_payload for item in restored], [item.raw_payload for item in raw_records])
+            self.assertEqual([(item.session_id, item.session_index) for item in restored],
+                             [(session, 1), (session, 2), (session, 3)])
+            details = root / "capture.json"
+            ExportService().export(ExportJob(root / "capture.drpd", details, "json", log_path=path))
+            data = json.loads(details.read_text(encoding="utf-8"))
+            self.assertEqual(data["records"][1]["annotation"], {"flagged": True, "note": "核对原始字节"})
+            with LogService(path) as db:
+                db.remove(session)
+                self.assertEqual(db.query(session), [])
+                self.assertEqual(db.annotation(session, 2), Annotation())
+
     def test_reuse_real_phase_two_indexes_preserves_raw_payload_and_provenance(self):
         for name, count in (("usb_pd_real.json", 3), ("usb_pd_request_real.json", 1),
                             ("usb_pd_vdm_real.json", 2), ("usb_pd_vdm_discovery_real.json", 18),

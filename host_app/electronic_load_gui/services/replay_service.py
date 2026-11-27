@@ -7,6 +7,7 @@ from PySide6.QtCore import QObject, QThread, QTimer, Signal, Slot
 from .analysis_service import AnalysisService
 from .capture_file import CaptureEntry, CaptureReader
 from .export_service import ExportJob, ExportService
+from .log_service import LogService
 
 
 @dataclass(frozen=True, slots=True)
@@ -27,6 +28,7 @@ class ReplayService(QObject):
     error = Signal(str)
     exported = Signal(object, int, str)
     finished = Signal()
+    history_result = Signal(str, object, object, str)
 
     def __init__(self) -> None:
         super().__init__()
@@ -46,6 +48,7 @@ class ReplayService(QObject):
         self._started = 0.0
         self._token = 0
         self._waiting = None
+        self._segment = 0
 
     def _publish(self) -> None:
         progress = self._reader.progress if self._reader else 0.0
@@ -58,6 +61,7 @@ class ReplayService(QObject):
         self._path = path
         self._analysis.reset()
         self._count = 0
+        self._segment = 0
         self._clock_ms = self._due_ms = 0.0
         self._capture_time = None
         self._waiting = None
@@ -74,6 +78,7 @@ class ReplayService(QObject):
     def _advance(self) -> None:
         self._next = next(self._iterator, None)
         while self._next is not None and self._next.record is None:
+            self._segment += 1
             self._analysis.reset()
             self._capture_time = None
             self._next = next(self._iterator, None)
@@ -116,6 +121,25 @@ class ReplayService(QObject):
         self._timer.stop()
         self._state = "paused"
 
+    @Slot(object)
+    def seek_frame(self, frame: int):
+        if not self._reader or frame <= 0:
+            return
+        if self._count >= frame:
+            self.load(self._path)
+        self._pause()
+        try:
+            while self._next is not None and self._count < frame - 1:
+                if QThread.currentThread().isInterruptionRequested():
+                    return
+                entry = self._next
+                self._count += 1
+                self._analysis.consume(self._count, entry.record, entry.provenance)
+                self._advance()
+            self.control("step", 0)
+        except Exception as exc:
+            self._fail(exc)
+
     def _schedule(self) -> None:
         if self._state == "playing" and self._waiting is None and self._next is not None:
             delay = max(0.0, (self._due_ms - self._now_ms()) / self._speed)
@@ -130,7 +154,9 @@ class ReplayService(QObject):
             while self._next is not None and (single or self._due_ms <= self._now_ms()) and len(batch) < 96:
                 entry = self._next
                 self._count += 1
-                batch.append(self._analysis.consume(self._count, entry.record, entry.provenance))
+                batch.append(self._analysis.consume(self._count, entry.record, entry.provenance,
+                                                    entry.session_id or f"replay:{self._segment}",
+                                                    entry.session_index or self._count))
                 self._advance()
                 if single:
                     break
@@ -163,6 +189,34 @@ class ReplayService(QObject):
             self.exported.emit(job.destination, 0, str(exc))
         if was_playing:
             self.control("play", 0)
+
+    @Slot(object, str, object, object)
+    def history(self, path, action, token, args):
+        try:
+            with LogService(path) as db:
+                if action == "sessions":
+                    result = (db.sessions(args), db.size_bytes())
+                elif action == "query":
+                    session, params = args
+                    result = db.query(session, **params)
+                elif action == "remove":
+                    db.remove(args)
+                    result = None
+                elif action == "annotations":
+                    result = db.annotations(*args)
+                elif action == "annotate":
+                    db.annotate(*args)
+                    result = args[-1]
+                elif action == "samples":
+                    result = db.samples(*args)
+                elif action == "replay":
+                    db.export_raw(*args, cancelled=QThread.currentThread().isInterruptionRequested)
+                    result = args[-1]
+                else:
+                    raise ValueError("未知历史日志操作")
+            self.history_result.emit(action, token, result, "")
+        except Exception as exc:
+            self.history_result.emit(action, token, None, str(exc))
 
     def _close_reader(self) -> None:
         self._timer.stop()

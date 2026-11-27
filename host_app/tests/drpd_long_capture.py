@@ -1,11 +1,13 @@
 """Measure a real DRPD capture through the USB PD workspace."""
 
 import argparse
+import ctypes
 from dataclasses import asdict
 from hashlib import sha256
 import json
 from math import isfinite
 from pathlib import Path
+import sys
 from time import monotonic
 import tracemalloc
 
@@ -29,6 +31,29 @@ def add_record(digest, record):
     payload = record.raw_payload
     digest.update(len(payload).to_bytes(8, "little"))
     digest.update(payload)
+
+
+def peak_working_set():
+    if sys.platform != "win32":
+        return None
+    from ctypes import wintypes
+
+    class ProcessMemoryCounters(ctypes.Structure):
+        _fields_ = [
+            ("size", wintypes.DWORD), ("page_faults", wintypes.DWORD),
+            ("peak_working_set", ctypes.c_size_t), ("working_set", ctypes.c_size_t),
+            ("peak_paged_pool", ctypes.c_size_t), ("paged_pool", ctypes.c_size_t),
+            ("peak_nonpaged_pool", ctypes.c_size_t), ("nonpaged_pool", ctypes.c_size_t),
+            ("pagefile", ctypes.c_size_t), ("peak_pagefile", ctypes.c_size_t),
+        ]
+
+    counters = ProcessMemoryCounters()
+    counters.size = ctypes.sizeof(counters)
+    current = ctypes.windll.kernel32.GetCurrentProcess
+    current.restype = wintypes.HANDLE
+    info = ctypes.windll.psapi.GetProcessMemoryInfo
+    info.argtypes = (wintypes.HANDLE, ctypes.POINTER(ProcessMemoryCounters), wintypes.DWORD)
+    return counters.peak_working_set if info(current(), ctypes.byref(counters), counters.size) else None
 
 
 def verify(workspace, port, output, seconds, inquiry_interval):
@@ -130,6 +155,7 @@ def verify(workspace, port, output, seconds, inquiry_interval):
         "read_back": read_back,
         "archive_integrity": archive_integrity,
         "python_traced_peak_bytes": peak_memory,
+        "process_peak_working_set_bytes": peak_working_set(),
         "ui_20ms_timer_max_gap_seconds": peak_tick_gap,
         "export_seconds": export_times,
         "errors": errors,
@@ -141,7 +167,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("port")
     parser.add_argument("output", type=Path)
-    parser.add_argument("--seconds", type=float, default=1800)
+    parser.add_argument("--seconds", type=float, default=300)
     parser.add_argument("--inquiry-interval", type=float, default=0,
                         help="Seconds between Get_Source_Cap requests while the existing sink is ready")
     args = parser.parse_args()

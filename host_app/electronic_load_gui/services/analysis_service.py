@@ -20,12 +20,43 @@ class AnalysisEvent:
     diagnostics: tuple[ParseDiagnostic, ...]
     epr_observed: bool
     epr_pdo_count: int
+    session_id: str = ""
+    session_index: int = 0
 
     @property
     def timestamp_us(self) -> int:
         if isinstance(self.record, FirmwareEvent):
             return self.record.timestamp_us
         return self.record.start_timestamp_us
+
+    @property
+    def end_us(self) -> int:
+        return getattr(self.record, "end_timestamp_us", self.timestamp_us)
+
+    @property
+    def sender(self) -> str:
+        header = self.message.header if self.message is not None else None
+        if header is not None:
+            if header.power_role is not None:
+                return "Source" if header.power_role else "Sink"
+            if header.cable_plug is not None:
+                return "Cable" if header.cable_plug else "Port"
+        return ""
+
+    @property
+    def receiver(self) -> str:
+        return {"Source": "Sink", "Sink": "Source", "Cable": "Port", "Port": "Cable"}.get(self.sender, "")
+
+    @property
+    def event_type(self) -> str:
+        if isinstance(self.record, FirmwareEvent):
+            return {1: "OVP", 2: "OCP", 3: "Detach", 4: "Source Found", 5: "Attach",
+                    9: "Sink Error", 10: "Sync Trigger", 11: "Sink Warning"}.get(self.record.event_type, "Firmware Event")
+        if self.sop in ("Hard Reset", "Cable Reset"):
+            return self.sop
+        if self.crc == "invalid" or self.record.decode_result:
+            return "Protocol Error"
+        return ""
 
     @property
     def message(self) -> PDMessageResult | None:
@@ -68,7 +99,8 @@ class AnalysisService:
         self.extended.disconnect()
         self.epr_observed = False
 
-    def consume(self, index: int, record: CaptureRecord | FirmwareEvent, provenance: str) -> AnalysisEvent:
+    def consume(self, index: int, record: CaptureRecord | FirmwareEvent, provenance: str,
+                session_id: str = "", session_index: int = 0) -> AnalysisEvent:
         result = power = discovery = extended = None
         diagnostics = []
         try:
@@ -104,7 +136,8 @@ class AnalysisService:
             diagnostics.append(ParseDiagnostic("analysis", "analysis_error", f"{type(exc).__name__}: {exc}"))
         epr = self.power.epr_source_capabilities()
         return AnalysisEvent(index, record, provenance, result, power, discovery, extended,
-                             tuple(dict.fromkeys(diagnostics)), self.epr_observed, len(epr.epr_pdos) if epr else 0)
+                             tuple(dict.fromkeys(diagnostics)), self.epr_observed, len(epr.epr_pdos) if epr else 0,
+                             session_id, session_index)
 
 
 def event_state(event: AnalysisEvent) -> str:

@@ -4,12 +4,16 @@ from datetime import datetime
 import logging
 from pathlib import Path
 from time import perf_counter_ns
+from uuid import uuid4
 
 from PySide6.QtCore import QObject, QTimer, Signal, Slot
 
 from ..devices.drpd.device import DrpdDevice
 from .analysis_service import AnalysisService
 from .capture_file import CaptureJournal, CaptureSnapshot
+from .log_service import LogService
+from .telemetry_service import TelemetryService
+from .trigger_service import TriggerService
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,10 +70,21 @@ class CaptureService(QObject):
     snapshot_ready = Signal(object)
     capture_cleared = Signal()
     finished = Signal()
+    history_error = Signal(str)
+    session_sample = Signal(str, object)
+    stream_changed = Signal(str)
 
-    def __init__(self, journal_path: Path, device_factory=DrpdDevice) -> None:
+    def __init__(self, journal_path: Path, device_factory=DrpdDevice, log_path: Path | None = None) -> None:
         super().__init__()
         self._path = journal_path
+        self._log_path = log_path
+        self._history = None
+        self._indexing = False
+        self._session_id = ""
+        self._session_index = 0
+        self._last_sample_us = None
+        self._csv_file = None
+        self._csv = None
         self._device = device_factory(self)
         self._protocol = self._device.protocol
         self._transport = self._device.transport
@@ -84,6 +99,18 @@ class CaptureService(QObject):
         self._disconnecting = False
         self._closing = False
         self._disk_failed = False
+        self._start_after_trigger = False
+        self.telemetry = TelemetryService(
+            self._protocol,
+            lambda: self._state.connection == "connected" and self._state.capture in ("idle", "running")
+            and self._waiting is None,
+            self,
+        )
+        self.telemetry.sampled.connect(self._sample)
+        self.trigger = TriggerService(
+            self._protocol, lambda: self._state.connection == "connected" and self._state.capture == "idle", self
+        )
+        self.trigger.changed.connect(self._trigger_changed)
         self._timer = QTimer(self, interval=60)
         self._timer.timeout.connect(self._poll)
         self._capture.capture_received.connect(self._receive)
@@ -133,6 +160,8 @@ class CaptureService(QObject):
             return
         self._publish(connection="connected", last_communication=self._now(), device_capture=value == "ON")
         self.refresh_status()
+        self.telemetry.activate(self._state.firmware)
+        self.trigger.activate(self._state.firmware)
 
     @Slot()
     def refresh_status(self) -> None:
@@ -162,22 +191,39 @@ class CaptureService(QObject):
     def start(self) -> None:
         if self._state.connection != "connected" or self._state.capture != "idle" or self._closing:
             return
+        if self.trigger.writing:
+            self._error("请等待 Trigger 配置读回后再启动捕获")
+            return
+        if self.trigger.loading_initial_config:
+            self._start_after_trigger = True
+            return
         if self._disk_failed:
             self._error("捕获文件写入失败。请保存可读部分并清空本次捕获后重试。")
             return
+        session_id = uuid4().hex
+        metadata = {
+            "session_id": session_id, "firmware_version": self._state.firmware, "port": self._state.port,
+            "provenance": "real", "capture_cycle_ns": self._state.cycle_ns,
+        }
+        trigger = self.trigger.metadata()
+        if trigger is not None:
+            metadata["trigger"] = trigger
         try:
             if self._journal is None:
-                self._journal = CaptureJournal(self._path, {"firmware_version": self._state.firmware,
-                                                            "port": self._state.port, "provenance": "real",
-                                                            "capture_cycle_ns": self._state.cycle_ns})
+                self._journal = CaptureJournal(self._path, metadata)
             else:
-                self._journal.boundary()
+                self._journal.boundary(**metadata)
                 self._journal.flush()
         except OSError as exc:
             self._disk_failed = True
             self._metrics = replace(self._metrics, journal_errors=self._metrics.journal_errors + 1)
             self._error(f"无法写入捕获文件：{exc}")
             return
+        self._session_id, self._session_index = session_id, 0
+        self._last_sample_us = None
+        self._indexing = self._log_path is not None
+        if self._indexing:
+            self._index(lambda db: db.start(session_id, metadata))
         self._analysis.reset()
         self._publish(capture="starting", error="", peak_queue=0, epr_observed=False, epr_pdo_count=0)
         self._set_capture(True, self._started)
@@ -206,6 +252,7 @@ class CaptureService(QObject):
 
     @Slot()
     def stop(self) -> None:
+        self._start_after_trigger = False
         if self._state.capture not in ("running", "starting"):
             return
         self._timer.stop()
@@ -222,6 +269,7 @@ class CaptureService(QObject):
 
     def _stopped(self) -> None:
         self._timer.stop()
+        self.stop_stream()
         logging.getLogger(__name__).info("Capture stopped. Device queue peak %d; firmware drop count unavailable",
                                          self._state.peak_queue)
         self._publish(capture="idle", waiting_for_ui=False)
@@ -247,7 +295,9 @@ class CaptureService(QObject):
     @Slot(object)
     def _receive(self, record) -> None:
         started = perf_counter_ns()
-        event = self._analysis.consume(self._metrics.received + 1, record, "real")
+        self._session_index += 1
+        event = self._analysis.consume(self._metrics.received + 1, record, "real",
+                                       self._session_id, self._session_index)
         duration = perf_counter_ns() - started
         self._batch.append(event)
         self._metrics = replace(
@@ -286,6 +336,16 @@ class CaptureService(QObject):
                 self._journal_failed(exc)
         events = tuple(self._batch)
         self._batch.clear()
+        self._index(lambda db: db.add(events))
+        if self._csv is not None:
+            try:
+                self._csv.writerows((event.session_id, event.session_index, event.timestamp_us,
+                                     event.sender, event.receiver, event.sop, event.message_name,
+                                     event.crc, event.event_type) for event in events)
+                self._csv_file.flush()
+            except OSError as exc:
+                self.history_error.emit(f"实时 CSV 写入失败：{exc}")
+                self.stop_stream()
         self._token += 1
         self._waiting = self._token
         last = events[-1]
@@ -373,8 +433,12 @@ class CaptureService(QObject):
     @Slot()
     def _disconnected(self) -> None:
         self._timer.stop()
+        self._start_after_trigger = False
+        self.telemetry.disconnect()
+        self.trigger.disconnect()
         before = self._state.connection
         self._deliver()
+        self.stop_stream()
         self._waiting = None
         self._metrics = replace(self._metrics, pending=0)
         expected = self._disconnecting or self._closing or before == "error"
@@ -388,7 +452,63 @@ class CaptureService(QObject):
                       epr_observed=False, epr_pdo_count=0)
         if self._closing:
             self._close_journal()
+            if self._history is not None:
+                self._history.close()
             self.finished.emit()
+
+    @Slot(object)
+    def _trigger_changed(self, state):
+        if self._start_after_trigger and not state.busy:
+            self._start_after_trigger = False
+            self.start()
+
+    @Slot(object)
+    def _sample(self, sample):
+        if self._state.capture == "running" and self._session_id:
+            if self._last_sample_us is not None and sample.timestamp_us < self._last_sample_us:
+                self._error("设备时钟已重置，已停止当前捕获")
+                self.stop()
+                return
+            self._last_sample_us = sample.timestamp_us
+            self._index(lambda db: db.add_sample(self._session_id, sample))
+            self.session_sample.emit(self._session_id, sample)
+
+    def _index(self, operation):
+        if not self._indexing:
+            return
+        try:
+            if self._history is None:
+                self._history = LogService(self._log_path)
+            operation(self._history)
+        except Exception as exc:
+            self._indexing = False
+            self.history_error.emit(f"历史日志写入失败：{exc}")
+
+    @Slot(object)
+    def start_stream(self, path: Path):
+        if self._csv_file is not None:
+            return
+        try:
+            self._csv_file = path.open("x", newline="", encoding="utf-8-sig")
+            self._csv = csv.writer(self._csv_file)
+            self._csv.writerow(("Session", "Frame", "Timestamp µs", "Sender", "Receiver",
+                                "SOP", "Message", "CRC", "Event"))
+            self._csv_file.flush()
+            self.stream_changed.emit(str(path))
+        except OSError as exc:
+            self.history_error.emit(f"无法启动实时 CSV：{exc}")
+            self.stop_stream()
+
+    @Slot()
+    def stop_stream(self):
+        file, self._csv_file = self._csv_file, None
+        self._csv = None
+        if file is not None:
+            try:
+                file.close()
+            except OSError as exc:
+                self.history_error.emit(f"无法关闭实时 CSV：{exc}")
+            self.stream_changed.emit("")
 
     def _close_journal(self) -> None:
         journal, self._journal = self._journal, None

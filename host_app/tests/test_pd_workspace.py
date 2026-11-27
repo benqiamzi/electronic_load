@@ -1,4 +1,5 @@
 from collections import deque
+import csv
 from pathlib import Path
 from tempfile import TemporaryDirectory, mkstemp
 from time import monotonic
@@ -13,6 +14,7 @@ from electronic_load_gui.devices.drpd.capture_client import CaptureClient
 from electronic_load_gui.devices.drpd.protocol_client import DrpdProtocolClient
 from electronic_load_gui.main_window import MainWindow
 from electronic_load_gui.services.capture_file import CaptureJournal, CaptureReader
+from electronic_load_gui.services.log_service import Annotation
 from electronic_load_gui.pd_views import CaptureTableModel
 from protocol_m7_fixtures import parse_wire, synthetic_mixed_wire
 from test_usb_pd import FIXTURES
@@ -54,7 +56,13 @@ class SimulatedDrpdTransport(QObject):
         command = data.decode("ascii").strip()
         responses = {"*IDN?": '"MTA",Dr.PD,test,1.0.0-beta.1', "BUS:CC:CAP:CYCLETIME?": "10",
                      "BUS:CC:CAP:EN?": "ON" if self.enabled else "OFF", "SINK:STATUS?": "PE_SNK_READY",
-                     "SINK:EPR:EN?": "ON", "SINK:CAP:EPR:COUNT?": "0", "BUS:CC:CAP:COUNT?": str(len(self.queue))}
+                     "SINK:EPR:EN?": "ON", "SINK:CAP:EPR:COUNT?": "0", "BUS:CC:CAP:COUNT?": str(len(self.queue)),
+                     "MEAS:ALL?": "4974734490,5.11,0.00,1.72,0.01,0.01,0.01,2.95,0.01,1.63,4974731430,6,34",
+                     "BUS:CC:ROLE?": "SINK,ATTACHED,DUT,CC1,USDS,CC1", "BUS:VBUS:STAT?": "ENABLED,NONE,NONE",
+                     "BUS:VBUS:OVPT?": "48", "BUS:VBUS:OCPT?": "5", "SINK:STATUS:ERROR?": "0",
+                     "TRIG:STAT?": "IDLE", "TRIG:EV:COUNT?": "0", "TRIG:EV:TYPE?": "OFF",
+                     "TRIG:EV:THRESH?": "1", "TRIG:EV:SEND?": "ANY", "TRIG:EV:MSGTYPE:FILT?": "",
+                     "TRIG:EV:AUTOREPEAT?": "OFF", "TRIG:SYNC:MODE?": "PULSE_HIGH", "TRIG:SYNC:PULSE?": "1000"}
         if command in responses:
             response = (responses[command] + "\n").encode("ascii")
         elif command == "BUS:CC:CAP:DATA?":
@@ -152,6 +160,7 @@ class PdWorkspaceTests(unittest.TestCase):
         self.wait(lambda: destination.exists() and not self.ws._exporting)
         with CaptureReader(destination) as reader:
             self.assertEqual(len(tuple(reader)), 48)
+            self.assertEqual(reader.metadata["trigger"]["event"], "OFF")
         self.transport.remove_device.emit()
         self.wait(lambda: self.ws.device.state.connection == "error" and "拔出" in self.ws.device.state.error)
         self.ws.device.connect_port("COM99")
@@ -178,6 +187,8 @@ class PdWorkspaceTests(unittest.TestCase):
         self.assertFalse(menu.isVisible())
         self.ws.navigation.setCurrentRow(4)
         self.ws.set_auto_follow(False)
+        self.ws.measurements._layout_actions["CC Lines"].setChecked(False)
+        self.ws._detail_action.setChecked(False)
         self.settings.sync()
         restored_settings = QSettings(self.settings.fileName(), QSettings.Format.IniFormat)
         restored = MainWindow(settings=restored_settings)
@@ -185,8 +196,50 @@ class PdWorkspaceTests(unittest.TestCase):
         self.assertEqual(restored.workspace_stack.currentIndex(), 1)
         self.assertEqual(restored.pd_workspace.navigation.currentRow(), 4)
         self.assertFalse(restored.pd_workspace._follow)
+        self.assertFalse(restored.pd_workspace.measurements._layout_actions["CC Lines"].isChecked())
+        self.assertFalse(restored.pd_workspace._detail_action.isChecked())
         self.assertEqual(restored.pd_workspace.device.state.connection, "disconnected")
         self.assertFalse(restored.pd_workspace.running)
+
+    def test_measurement_timeline_and_persistent_history(self):
+        self.window.show()
+        self.window.workspace_manager.select(1)
+        self.ws.connect_button.click()
+        self.wait(lambda: self.ws._telemetry.sample is not None and self.ws.trigger._state.config is not None)
+        self.assertEqual(self.ws._telemetry.sample.voltage, 5.11)
+        self.assertEqual(self.ws.measurements._values["dut_cc1"].text(), "1.72 V")
+        self.assertEqual(self.ws.trigger._state.config.threshold, 1)
+        self.ws.navigation.setCurrentRow(1)
+        stream = self.directory / "stream.csv"
+        self.ws.device.start_stream.emit(stream)
+        self.ws.go.click()
+        self.wait(lambda: self.ws.device.state.capture == "running")
+        self.ws.query.click()
+        self.wait(lambda: self.ws.live_model.rowCount() == 48)
+        self.ws.navigation.setCurrentRow(9)
+        self.ws._select_timeline_frame(3)
+        selected = self.ws._current_event()
+        self.assertEqual(selected.index, 3)
+        self.assertTrue(self.ws.timestrip._marker.isVisible())
+        self.ws._annotate(selected, Annotation(True, "测试备注"))
+        self.wait(lambda: self.ws.live_model.annotation(selected).flagged)
+        self.ws.flag_filter.setCurrentIndex(1)
+        self.ws._apply_filter()
+        self.assertEqual(self.ws.filter.rowCount(), 1)
+        self.ws.halt.click()
+        self.wait(lambda: self.ws.device.state.capture == "idle" and not self.ws._stream_path)
+        with stream.open(encoding="utf-8-sig", newline="") as file:
+            self.assertEqual(len(list(csv.DictReader(file))), 48)
+        self.ws.navigation.setCurrentRow(10)
+        self.wait(lambda: self.ws.history.table.rowCount() == 48)
+        self.ws.history.table.selectRow(2)
+        self.ws.history.open_selected()
+        self.wait(lambda: self.ws._current_event() is not None and self.ws._current_event().index == 3
+                  and self.ws._dataset == "replay")
+        self.wait(lambda: self.ws.replay_model.annotation(self.ws._current_event()).note == "测试备注")
+        self.transport.remove_device.emit()
+        self.wait(lambda: self.ws._telemetry.sample is None)
+        self.assertEqual(self.ws.measurements._values["voltage"].text(), "—")
 
     def test_replay_step_filter_locate_and_restore_selection(self):
         self.window.workspace_manager.select(1)
