@@ -140,6 +140,11 @@ class PdWorkspaceTests(unittest.TestCase):
         self.assertEqual(self.ws.navigation.currentRow(), 1)
         self.ws.halt.click()
         self.wait(lambda: self.ws.device.state.capture == "idle" and self.ws.device.state.device_capture is False)
+        metrics = self.ws.device.state.metrics
+        self.assertEqual((metrics.received, metrics.analyzed, metrics.archived), (48, 48, 48))
+        self.assertEqual((metrics.pending, metrics.peak_pending), (0, 8))
+        self.assertGreater(metrics.analysis_ns, 0)
+        self.assertEqual(metrics.crc_unavailable, sum(e.crc == "unavailable" for e in self.ws.live_model.rows))
         self.ws.clear_display.click()
         self.assertEqual(self.ws.live_model.rowCount(), 0)
         destination = self.directory / "live.drpd"

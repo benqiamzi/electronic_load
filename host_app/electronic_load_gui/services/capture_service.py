@@ -3,12 +3,33 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 import logging
 from pathlib import Path
+from time import perf_counter_ns
 
 from PySide6.QtCore import QObject, QTimer, Signal, Slot
 
 from ..devices.drpd.device import DrpdDevice
 from .analysis_service import AnalysisService
 from .capture_file import CaptureJournal, CaptureSnapshot
+
+
+@dataclass(frozen=True, slots=True)
+class CaptureMetrics:
+    """Host counters for the current raw journal."""
+
+    received: int = 0
+    archived: int = 0
+    capture_read_errors: int = 0
+    analysis_errors: int = 0
+    analysis_ns: int = 0
+    crc_unavailable: int = 0
+    journal_errors: int = 0
+    pending: int = 0
+    peak_pending: int = 0
+    backpressure_count: int = 0
+
+    @property
+    def analyzed(self) -> int:
+        return self.received - self.analysis_errors
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,6 +54,7 @@ class DeviceState:
     firmware_epr_count: int | None = None
     epr_observed: bool = False
     epr_pdo_count: int = 0
+    metrics: CaptureMetrics = CaptureMetrics()
 
 
 class CaptureService(QObject):
@@ -53,6 +75,7 @@ class CaptureService(QObject):
         self._transport = self._device.transport
         self._capture = self._device.capture
         self._state = DeviceState()
+        self._metrics = CaptureMetrics()
         self._analysis = AnalysisService()
         self._journal = None
         self._batch = []
@@ -71,7 +94,7 @@ class CaptureService(QObject):
         self._protocol.disconnected.connect(self._disconnected)
 
     def _publish(self, **changes) -> None:
-        state = replace(self._state, **changes)
+        state = replace(self._state, metrics=self._metrics, **changes)
         if state != self._state:
             self._state = state
             self.changed.emit(state)
@@ -152,6 +175,7 @@ class CaptureService(QObject):
                 self._journal.flush()
         except OSError as exc:
             self._disk_failed = True
+            self._metrics = replace(self._metrics, journal_errors=self._metrics.journal_errors + 1)
             self._error(f"无法写入捕获文件：{exc}")
             return
         self._analysis.reset()
@@ -211,6 +235,7 @@ class CaptureService(QObject):
         if self._waiting is not None:
             if not self._state.waiting_for_ui:
                 logging.getLogger(__name__).warning("DRPD capture polling paused by GUI backpressure")
+                self._metrics = replace(self._metrics, backpressure_count=self._metrics.backpressure_count + 1)
             self._publish(waiting_for_ui=True)
             return
         self._capture.drain_capture_queue()
@@ -221,8 +246,19 @@ class CaptureService(QObject):
 
     @Slot(object)
     def _receive(self, record) -> None:
-        event = self._analysis.consume(self._state.count + len(self._batch) + 1, record, "real")
+        started = perf_counter_ns()
+        event = self._analysis.consume(self._metrics.received + 1, record, "real")
+        duration = perf_counter_ns() - started
         self._batch.append(event)
+        self._metrics = replace(
+            self._metrics,
+            received=event.index,
+            analysis_errors=self._metrics.analysis_errors + any(d.code == "analysis_error" for d in event.diagnostics),
+            analysis_ns=self._metrics.analysis_ns + duration,
+            crc_unavailable=self._metrics.crc_unavailable + (event.crc == "unavailable"),
+            pending=len(self._batch),
+            peak_pending=max(self._metrics.peak_pending, len(self._batch)),
+        )
         if self._disk_failed:
             return
         try:
@@ -232,6 +268,7 @@ class CaptureService(QObject):
 
     def _journal_failed(self, exc: OSError) -> None:
         self._disk_failed = True
+        self._metrics = replace(self._metrics, journal_errors=self._metrics.journal_errors + 1)
         self._error(f"捕获写入失败，已停止读取；已落盘部分仍可保存：{exc}")
         if self._state.capture == "draining":
             self._stopped()
@@ -243,7 +280,8 @@ class CaptureService(QObject):
             return
         if not self._disk_failed:
             try:
-                self._journal.flush()
+                snapshot = self._journal.flush()
+                self._metrics = replace(self._metrics, archived=snapshot.count)
             except OSError as exc:
                 self._journal_failed(exc)
         events = tuple(self._batch)
@@ -266,6 +304,7 @@ class CaptureService(QObject):
     def acknowledge(self, token: int) -> None:
         if token == self._waiting:
             self._waiting = None
+            self._metrics = replace(self._metrics, pending=0)
             self._publish(waiting_for_ui=False)
 
     @Slot()
@@ -274,7 +313,9 @@ class CaptureService(QObject):
         if self._journal is not None:
             if not self._disk_failed:
                 try:
-                    self._journal.flush()
+                    snapshot = self._journal.flush()
+                    self._metrics = replace(self._metrics, archived=snapshot.count)
+                    self._publish()
                 except OSError as exc:
                     self._journal_failed(exc)
             snapshot = CaptureSnapshot(self._path, self._journal.size, self._journal.committed_count)
@@ -286,6 +327,8 @@ class CaptureService(QObject):
             return
         self._close_journal()
         self._disk_failed = False
+        self._metrics = CaptureMetrics()
+        self._waiting = None
         self._analysis.reset()
         self._publish(count=0, crc_errors=0, diagnostic_count=0, peak_queue=0, epr_observed=False, epr_pdo_count=0,
                       waiting_for_ui=False, error="")
@@ -319,6 +362,7 @@ class CaptureService(QObject):
 
     @Slot(str)
     def _capture_error(self, error: str) -> None:
+        self._metrics = replace(self._metrics, capture_read_errors=self._metrics.capture_read_errors + 1)
         self._deliver()
         self._error(error)
         if self._state.capture == "draining":
@@ -331,6 +375,8 @@ class CaptureService(QObject):
         self._timer.stop()
         before = self._state.connection
         self._deliver()
+        self._waiting = None
+        self._metrics = replace(self._metrics, pending=0)
         expected = self._disconnecting or self._closing or before == "error"
         if not expected and before in ("connected", "connecting") and not self._state.error:
             self._error("DRPD 串口已断开")
@@ -350,6 +396,7 @@ class CaptureService(QObject):
             try:
                 journal.close()
             except OSError as exc:
+                self._metrics = replace(self._metrics, journal_errors=self._metrics.journal_errors + 1)
                 self._error(f"关闭捕获文件失败：{exc}")
 
     @Slot()

@@ -424,8 +424,15 @@ class UsbPdWorkspace(QWidget):
     def _update_summary(self) -> None:
         showing = self.filter.rowCount()
         if self._dataset == "live":
-            self.capture_summary.setToolTip("")
             state = self.device.state
+            metrics = state.metrics
+            self.capture_summary.setToolTip(
+                f"主机读取 {metrics.received} · 分析 {metrics.analyzed} · 原始归档 {metrics.archived}\n"
+                f"待交付 {metrics.pending}（峰值 {metrics.peak_pending}）· 背压 {metrics.backpressure_count} 次\n"
+                f"CRC 不可用 {metrics.crc_unavailable} · 读取失败 {metrics.capture_read_errors} · "
+                f"写入失败 {metrics.journal_errors}\n"
+                "固件未提供物理漏捕计数"
+            )
             queue = str(state.queue) if state.queue is not None else PLACEHOLDER
             epr = f"EPR {'已观察到通告' if state.epr_observed else '未观察到通告'} · 有效 PDO {state.epr_pdo_count}"
             hidden = f" · 显示窗口外 {self.live_model.hidden} 帧" if self.live_model.hidden else ""

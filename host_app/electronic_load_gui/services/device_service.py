@@ -95,7 +95,8 @@ class DeviceService(QObject):
                 self.error.emit(f"无法建立临时捕获文件：{exc}")
                 return
         self._update(DeviceState(connection="connecting", port=port, count=self.state.count,
-                                 crc_errors=self.state.crc_errors, diagnostic_count=self.state.diagnostic_count))
+                                 crc_errors=self.state.crc_errors, diagnostic_count=self.state.diagnostic_count,
+                                 metrics=self.state.metrics))
         self._connect.emit(port)
 
     def shutdown(self) -> None:
